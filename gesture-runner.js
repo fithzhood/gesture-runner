@@ -73,6 +73,23 @@ const NUDGE_AFTER = 10;        // seconds of stillness before the opening leans 
 const HAZARD_TYPES = ['obstacle', 'gate', 'enemyGun', 'enemySword', 'gap'];
 const BREATHER_SEC = 30;       // after the run unlock, density drops for a while
 
+// A full day takes four minutes and never resets on death, so the light is
+// always drifting somewhere new. Kept low in saturation on purpose: the orbs
+// are the only thing in this game allowed to be a strong colour.
+const DAY_SECONDS = 240;
+const SKY_KEYS = [
+  //  t     sky top      horizon        ground        hills far    hills near   stars
+  { t: 0.00, top: '#070912', hor: '#111a2e', gnd: '#12161f', far: '#0d1424', near: '#0a0f1a', stars: 1.00 },
+  { t: 0.14, top: '#0d1226', hor: '#2a2340', gnd: '#171a24', far: '#1a1a30', near: '#101322', stars: 0.55 },
+  { t: 0.24, top: '#1b2036', hor: '#5a3f48', gnd: '#1f2029', far: '#33293c', near: '#181a26', stars: 0.10 },
+  { t: 0.38, top: '#243046', hor: '#4a5a70', gnd: '#242833', far: '#33415a', near: '#1d222e', stars: 0.00 },
+  { t: 0.52, top: '#2b3a54', hor: '#61758c', gnd: '#282d38', far: '#3b4b66', near: '#212734', stars: 0.00 },
+  { t: 0.68, top: '#243046', hor: '#7a5548', gnd: '#242833', far: '#43354a', near: '#1d222e', stars: 0.00 },
+  { t: 0.79, top: '#151a2c', hor: '#6b3b3f', gnd: '#1b1e28', far: '#2b2338', near: '#13161f', stars: 0.25 },
+  { t: 0.88, top: '#0b0f1c', hor: '#2b2440', gnd: '#151821', far: '#161a2c', near: '#0d1119', stars: 0.75 },
+  { t: 1.00, top: '#070912', hor: '#111a2e', gnd: '#12161f', far: '#0d1424', near: '#0a0f1a', stars: 1.00 }
+];
+
 // palette
 const COL = {
   bg: '#0e1015',
@@ -115,6 +132,7 @@ const state = {
   camera: { x: 0 },
   particles: [],         // collection sparks; never touched by hit-testing
   shake: 0,
+  sky: { t: 0.30, stars: [], hills: null },   // day/night clock; survives death
   opening: null,         // the wordless first 25 seconds
   celebration: null,     // slow-motion unlock demonstration
   breatherUntil: 0,
@@ -657,7 +675,7 @@ function buildItem(item, x) {
     case 'beam':  return addEntity({ type: 'obstacle', shape: 'beam', x: x, y: 60, w: 60, h: GROUND_Y - 90 });
     case 'gapNarrow': return addEntity({ type: 'gap', x: x, y: GROUND_Y, w: 76, h: REF_H - GROUND_Y });
     case 'gapWide':   return addEntity({ type: 'gap', x: x, y: GROUND_Y, w: 168, h: REF_H - GROUND_Y });
-    case 'gate':  return addEntity({ type: 'gate', x: x, y: GROUND_Y - 60, w: 16, h: 60 });
+    case 'gate':  return addEntity({ type: 'gate', x: x, y: GROUND_Y - 60, w: 20, h: 60 });
     case 'target': return addEntity({ type: 'target', x: x, y: item.y, w: 26, h: 26 });
     case 'enemyGun': return addEntity({ type: 'enemyGun', x: x, y: GROUND_Y - 40, w: 24, h: 40 });
     case 'enemySword': return addEntity({ type: 'enemySword', x: x, y: GROUND_Y - 42, w: 26, h: 42 });
@@ -1177,6 +1195,8 @@ function orbValue() {
 function update(dt) {
   state.run.time += dt;
 
+  updateSky(dt);
+
   // the unlock celebration slows the world without slowing the celebration
   updateCelebration(dt);
   const play = state.celebration ? dt * CELEBRATION_SLOW : dt;
@@ -1194,6 +1214,140 @@ function update(dt) {
 }
 
 
+/* ---------------------------- the sky -------------------------------
+   A slow day, drifting across every run. It never resets on death: coming
+   back to a sky that has moved on is most of what makes it feel gentle.
+   -------------------------------------------------------------------- */
+
+function hexToRgb(h) {
+  return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+}
+
+function mixHex(a, b, k) {
+  const x = hexToRgb(a), y = hexToRgb(b);
+  return 'rgb(' + Math.round(x[0] + (y[0] - x[0]) * k) + ',' +
+                  Math.round(x[1] + (y[1] - x[1]) * k) + ',' +
+                  Math.round(x[2] + (y[2] - x[2]) * k) + ')';
+}
+
+function skyNow() {
+  const t = state.sky.t;
+  let i = 0;
+  while (i < SKY_KEYS.length - 2 && SKY_KEYS[i + 1].t <= t) i++;
+  const a = SKY_KEYS[i], b = SKY_KEYS[i + 1];
+  let k = (t - a.t) / (b.t - a.t);
+  k = k * k * (3 - 2 * k);                  // smoothstep, so nothing snaps
+  return {
+    top: mixHex(a.top, b.top, k),
+    hor: mixHex(a.hor, b.hor, k),
+    gnd: mixHex(a.gnd, b.gnd, k),
+    far: mixHex(a.far, b.far, k),
+    near: mixHex(a.near, b.near, k),
+    stars: a.stars + (b.stars - a.stars) * k
+  };
+}
+
+function buildSkyDecor() {
+  const stars = [];
+  for (let i = 0; i < 90; i++) {
+    stars.push({
+      x: Math.random() * 2000,
+      y: Math.random() * (GROUND_Y - 90),
+      r: 0.6 + Math.random() * 1.1,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.6 + Math.random() * 1.4
+    });
+  }
+  state.sky.stars = stars;
+}
+
+function updateSky(dt) {
+  state.sky.t = (state.sky.t + dt / DAY_SECONDS) % 1;
+}
+
+// a deterministic ridge, so the hills are stable however far you run
+function ridge(x, seed, amp, wave) {
+  return Math.sin(x / wave + seed) * amp
+       + Math.sin(x / (wave * 0.37) + seed * 2.3) * amp * 0.42
+       + Math.sin(x / (wave * 0.13) + seed * 4.1) * amp * 0.16;
+}
+
+function drawHillLayer(colour, parallax, baseY, amp, wave, seed) {
+  const v = state.view;
+  const off = state.camera.x * parallax;
+  ctx.fillStyle = colour;
+  ctx.beginPath();
+  ctx.moveTo(state.camera.x, REF_H);
+  const step = 14;
+  for (let sx = -step; sx <= v.worldW + step; sx += step) {
+    const wx = sx + off;
+    ctx.lineTo(state.camera.x + sx, baseY + ridge(wx, seed, amp, wave));
+  }
+  ctx.lineTo(state.camera.x + v.worldW + step, REF_H);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawSky(sky) {
+  const v = state.view;
+  const left = state.camera.x;
+
+  const g = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+  g.addColorStop(0, sky.top);
+  g.addColorStop(1, sky.hor);
+  ctx.fillStyle = g;
+  ctx.fillRect(left, 0, v.worldW, GROUND_Y);
+
+  if (sky.stars > 0.01) {
+    const stars = state.sky.stars;
+    const off = state.camera.x * 0.06;
+    for (let i = 0; i < stars.length; i++) {
+      const st = stars[i];
+      let x = (st.x - off) % 2000;
+      if (x < 0) x += 2000;
+      if (x > v.worldW + 4) continue;
+      const tw = 0.55 + 0.45 * Math.sin(state.run.time * st.speed + st.phase);
+      ctx.globalAlpha = sky.stars * tw;
+      ctx.fillStyle = '#e8eaf0';
+      ctx.fillRect(left + x, st.y, st.r, st.r);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  drawCelestialBody(sky);
+  drawHillLayer(sky.far, 0.18, GROUND_Y - 54, 22, 210, 1.7);
+  drawHillLayer(sky.near, 0.42, GROUND_Y - 20, 15, 130, 4.2);
+}
+
+// sun by day, moon by night, on the same slow arc
+function drawCelestialBody(sky) {
+  const v = state.view;
+  const t = state.sky.t;
+  const day = t > 0.20 && t < 0.82;
+  const phase = day ? (t - 0.20) / 0.62 : ((t + 0.18) % 1) / 0.38;
+  const x = state.camera.x + v.worldW * (0.12 + phase * 0.78);
+  const y = GROUND_Y - 40 - Math.sin(phase * Math.PI) * (GROUND_Y - 120);
+  const r = day ? 17 : 13;
+  const core = day ? '#ffd9a3' : '#dfe6f5';
+
+  // a real falloff: a flat disc at low alpha reads as a grey ring, not a glow
+  const halo = ctx.createRadialGradient(x, y, r * 0.8, x, y, r * 3.2);
+  halo.addColorStop(0, core);
+  halo.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.globalAlpha = 0.22;
+  ctx.fillStyle = halo;
+  ctx.beginPath(); ctx.arc(x, y, r * 3.2, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = core;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  if (!day) {
+    // bite a crescent out of the moon with the sky behind it
+    ctx.fillStyle = sky.top;
+    ctx.beginPath(); ctx.arc(x + r * 0.42, y - r * 0.3, r * 0.92, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+
 /* ============================= 7. renderers ========================== */
 
 /* Two renderers behind one interface. Rectangles are permanent and always
@@ -1202,7 +1356,7 @@ function update(dt) {
    default state costs the console nothing; delete the whole assets folder and
    the game is still unchanged underneath, at the price of one 404 log for the
    probe. */
-const sprites = { ready: false, manifest: null, image: null, anim: '', frame: 0, clock: 0 };
+const sprites = { ready: false, manifest: null, image: null, anim: '', frame: 0, clock: 0, entities: {}, ground: {} };
 
 const ACTION_TO_ANIM = {
   idle: 'idle', walk: 'walk', run: 'run', jump: 'jump', fall: 'fall',
@@ -1215,23 +1369,102 @@ const ANIM_FALLBACK = {
   slide: 'crouch', shoot: 'slash', slash: 'attack', death: 'hurt'
 };
 
+function loadImage(src, onload) {
+  const img = new Image();
+  img.onload = function () { onload(img); };
+  img.onerror = function () { /* missing file: that thing stays a rectangle */ };
+  img.src = src;
+}
+
 function loadSprites() {
   if (!window.fetch) return;
   fetch('assets/manifest.json', { cache: 'no-store' })
     .then(function (r) { if (!r.ok) throw new Error('no manifest'); return r.json(); })
     .then(function (m) {
-      if (!m || !m.player || !m.player.sheet || !m.player.animations) throw new Error('bad manifest');
-      const img = new Image();
-      img.onload = function () {
-        sprites.manifest = m.player;
-        sprites.image = img;
-        sprites.anim = '';
-        sprites.ready = true;
-      };
-      img.onerror = function () { /* sheet missing: stay on rectangles */ };
-      img.src = m.player.sheet;
+      if (!m) throw new Error('bad manifest');
+
+      if (m.player && m.player.sheet && m.player.animations) {
+        loadImage(m.player.sheet, function (img) {
+          sprites.manifest = m.player;
+          sprites.image = img;
+          sprites.anim = '';
+          sprites.ready = true;
+        });
+      }
+
+      if (m.ground) {
+        ['strip', 'ledge'].forEach(function (key) {
+          const spec = m.ground[key];
+          if (!spec || !spec.sheet) return;
+          loadImage(spec.sheet, function (img) {
+            spec.image = img;
+            sprites.ground[key] = spec;
+          });
+        });
+      }
+
+      // Entities load one at a time and switch over as they arrive, so a
+      // single missing file costs that one thing its sprite and nothing else.
+      if (m.entities) {
+        Object.keys(m.entities).forEach(function (key) {
+          const spec = m.entities[key];
+          if (!spec || !spec.sheet) return;
+          loadImage(spec.sheet, function (img) {
+            spec.image = img;
+            if (spec.tint) spec.tinted = {};
+            sprites.entities[key] = spec;
+          });
+        });
+      }
     })
     .catch(function () { /* no assets folder, or opened from file://: rectangles */ });
+}
+
+// A white sprite multiplied into a colour, cached per colour. The orb has to
+// keep changing with the speed state, and that is a tint, not nine files.
+function tintedSprite(spec, colour) {
+  if (!spec.tinted) spec.tinted = {};
+  if (spec.tinted[colour]) return spec.tinted[colour];
+  const c = document.createElement('canvas');
+  c.width = spec.image.width;
+  c.height = spec.image.height;
+  const g = c.getContext('2d');
+  g.drawImage(spec.image, 0, 0);
+  g.globalCompositeOperation = 'multiply';
+  g.fillStyle = colour;
+  g.fillRect(0, 0, c.width, c.height);
+  g.globalCompositeOperation = 'destination-in';
+  g.drawImage(spec.image, 0, 0);
+  spec.tinted[colour] = c;
+  return c;
+}
+
+// Which sprite an entity uses. Obstacles are keyed by shape, and enemyGun
+// alternates between two creatures so a patrol is not two clones.
+function spriteKeyFor(e) {
+  if (e.type === 'obstacle') return e.shape;
+  if (e.type === 'enemyGun') return (e.id % 2) ? 'enemyGun2' : 'enemyGun';
+  return e.type;
+}
+
+function drawEntitySprite(e, spec) {
+  const frame = spec.frames > 1
+    ? Math.floor((state.run.time + (e.id % 7) * 0.31) * spec.fps) % spec.frames
+    : 0;
+  const sx = frame * spec.frameWidth;
+  const img = (spec.tint ? tintedSprite(spec, orbColour()) : spec.image);
+
+  if (spec.anchor === 'box') {
+    ctx.drawImage(img, sx, 0, spec.frameWidth, spec.frameHeight, e.x, e.y, e.w, e.h);
+    return;
+  }
+
+  const h = spec.height || spec.frameHeight;
+  const k = h / spec.frameHeight;
+  const w = spec.frameWidth * k;
+  const cx = e.x + e.w / 2 - w / 2;
+  const y = spec.anchor === 'bottom' ? e.y + e.h - h : e.y + e.h / 2 - h / 2;
+  ctx.drawImage(img, sx, 0, spec.frameWidth, spec.frameHeight, cx, y, w, h);
 }
 
 function spriteAnimName() {
@@ -1272,7 +1505,9 @@ function render(now) {
   }
   ctx.translate(-state.camera.x, 0);
 
-  drawGround();
+  const sky = skyNow();
+  drawSky(sky);
+  drawGround(sky);
   drawEntities();
   drawParticles();
   drawPointerTrails();
@@ -1290,10 +1525,11 @@ function drawParticles() {
   ctx.globalAlpha = 1;
 }
 
-function drawGround() {
+function drawGround(sky) {
   const v = state.view;
   const left = state.camera.x;
   const right = left + v.worldW;
+  groundTint = sky ? sky.gnd : COL.ground;
 
   const gaps = [];
   for (let i = 0; i < state.entities.length; i++) {
@@ -1310,9 +1546,40 @@ function drawGround() {
   if (x < right) drawGroundSpan(x, right);
 }
 
+let groundTint = COL.ground;
+
 function drawGroundSpan(x0, x1) {
-  ctx.fillStyle = COL.ground;
+  ctx.fillStyle = groundTint;
   ctx.fillRect(x0, GROUND_Y, x1 - x0, REF_H - GROUND_Y);
+
+  const strip = sprites.ground.strip;
+  if (strip) {
+    // tiled from a fixed world origin, so the texture stays put in the world
+    // rather than sliding under the player
+    const w = strip.w;
+    const start = Math.floor(x0 / w) * w;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x0, GROUND_Y, x1 - x0, strip.h);
+    ctx.clip();
+    for (let x = start; x < x1; x += w) {
+      ctx.drawImage(strip.image, x, GROUND_Y, w, strip.h);
+    }
+    ctx.restore();
+
+    const ledge = sprites.ground.ledge;
+    if (ledge) {
+      ctx.drawImage(ledge.image, x0, GROUND_Y, ledge.w, ledge.h);
+      ctx.save();
+      ctx.translate(x1, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(ledge.image, 0, GROUND_Y, ledge.w, ledge.h);
+      ctx.restore();
+    }
+    return;
+  }
+
+  /* ---- rectangle fallback ---- */
   ctx.fillStyle = COL.groundLine;
   ctx.fillRect(x0, GROUND_Y, x1 - x0, 1.5);
 
@@ -1395,18 +1662,36 @@ function drawEntities() {
   for (let i = 0; i < state.entities.length; i++) {
     const e = state.entities[i];
     if (e.dead) continue;
+    if (e.type === 'gap') continue;             // a gap is an absence of ground
 
+    // The orb's halo is drawn either way: the colour of that glow is the
+    // player's main feedback about how much their greed is paying.
     if (e.type === 'orb') {
-      const cx = e.x + e.w / 2, cy = e.y + e.h / 2;
+      const gx = e.x + e.w / 2, gy = e.y + e.h / 2;
+      ctx.globalAlpha = 0.20;
       ctx.fillStyle = oc;
-      ctx.globalAlpha = 0.22;
-      ctx.beginPath(); ctx.arc(cx, cy, e.w / 2 + 5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(gx, gy, e.w / 2 + 6, 0, Math.PI * 2); ctx.fill();
       ctx.globalAlpha = 1;
-      ctx.beginPath(); ctx.arc(cx, cy, e.w / 2, 0, Math.PI * 2); ctx.fill();
+    }
+
+    const spec = sprites.entities[spriteKeyFor(e)];
+    if (spec) {
+      // a sword enemy out of reach is dimmed rather than tinted, so the
+      // moment it becomes killable reads as it lighting up
+      if (e.type === 'enemySword' && !inMeleeRange(e)) ctx.globalAlpha = 0.68;
+      drawEntitySprite(e, spec);
+      ctx.globalAlpha = 1;
+      drawEntityFlash(e);
       continue;
     }
 
-    if (e.type === 'gap') continue;             // a gap is an absence of ground
+    /* ---- rectangle fallback, still a real renderer ---- */
+
+    if (e.type === 'orb') {
+      ctx.fillStyle = oc;
+      ctx.beginPath(); ctx.arc(e.x + e.w / 2, e.y + e.h / 2, e.w / 2, 0, Math.PI * 2); ctx.fill();
+      continue;
+    }
 
     if (e.type === 'bullet') {
       ctx.fillStyle = COL.bullet;
@@ -1428,15 +1713,17 @@ function drawEntities() {
       label = e.shape === 'spike' ? 'spike' : (e.shape === 'beam' ? 'beam' : 'block');
     }
 
-    drawObstacleShape(e, colour, sprites.ready ? '' : label);
-
-    if (e.flash > 0) {
-      ctx.globalAlpha = Math.min(1, e.flash * 3);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(e.x - 2, e.y - 2, e.w + 4, e.h + 4);
-      ctx.globalAlpha = 1;
-    }
+    drawObstacleShape(e, colour, label);
+    drawEntityFlash(e);
   }
+}
+
+function drawEntityFlash(e) {
+  if (e.flash <= 0) return;
+  ctx.globalAlpha = Math.min(1, e.flash * 3);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(e.x - 2, e.y - 2, e.w + 4, e.h + 4);
+  ctx.globalAlpha = 1;
 }
 
 // the wordless hint: the body tips towards the direction of travel
@@ -1746,6 +2033,7 @@ function isCapacitorNative() {
 function init() {
   if (isCapacitorNative()) document.body.classList.add('capacitor');
   resize();
+  buildSkyDecor();
   loadMeta();
   loadSprites();
   startRun();
