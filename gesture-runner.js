@@ -55,8 +55,12 @@ const ORB_LIFT = 24;            // the leader rides above the fingertip, which
                                 // on a phone is under the thumb otherwise
 const BULLET_SPEED = 520;
 const DEATH_PAUSE = 1.1;
-const SLIDE_DIST = 120;   // a slide is measured in ground covered, not seconds,
-                          // so it clears a beam at any speed without over-committing
+// Mega Man 3's slide: a committed dash, not a crouch you hold. Fixed
+// distance, low profile the whole way, a burst of speed even from a walk,
+// and only a jump gets you out of it early.
+const SLIDE_DIST = 150;   // measured in ground covered, not seconds, so it
+                          // clears a beam at any speed without over-committing
+const SLIDE_SPEED = 285;  // the dash floor: sliding never slows you down
 const AIRTIME = 2 * JUMP_V / GRAVITY;
 const WALK_JUMP_REACH = SPEED.walking * AIRTIME;   // what a walking jump can span
 
@@ -918,9 +922,11 @@ function applyAction(a) {
 
     case 'slide':
       if (p.grounded) {
+        if (!p.crouch) burst(p.x - 10, GROUND_Y - 3, '#8a8f9c', 5, 55);   // kicked-up dust
         p.crouchUntilX = p.x + SLIDE_DIST;
+        p.crouch = true;
         p.action = 'slide';
-        p.actionTimer = 0.12;
+        p.actionTimer = 0;
       } else {
         p.vy = Math.max(p.vy, 260);   // fast-fall out of a jump
       }
@@ -1186,7 +1192,7 @@ function updatePlayer(dt) {
   if (p.speed < wanted) p.speed = Math.min(wanted, p.speed + ACCEL_RATE * dt);
   else if (p.speed > wanted) p.speed = Math.max(wanted, p.speed - DECEL_RATE * dt);
 
-  const step = p.speed * dt;
+  const step = (p.crouch ? Math.max(p.speed, SLIDE_SPEED) : p.speed) * dt;
   const line = stopLine();
   p.x += step;
   if (line !== null && p.x > line) {
@@ -1216,7 +1222,9 @@ function updatePlayer(dt) {
     p.vy = 0;
   }
 
-  if (p.actionTimer <= 0) {
+  if (p.crouch) {
+    p.action = 'slide';
+  } else if (p.actionTimer <= 0) {
     if (!p.grounded) p.action = p.vy < 0 ? 'jump' : 'fall';
     else if (p.speedState === 'running') p.action = 'run';
     else if (p.speedState === 'walking') p.action = 'walk';
@@ -1262,6 +1270,7 @@ function updateEntities(dt) {
     if (e.shake > 0) e.shake = Math.max(0, e.shake - dt);
   }
   updateCarriedOrbs(dt);
+  if (state.run.alive) sweepOrbsByContact();
 }
 
 // Each finger tows a chain: the first orb chases the fingertip, the rest
@@ -1318,6 +1327,18 @@ function updateCarriedOrbs(dt) {
       if (Math.hypot(tx - px, ty - py) <= ORB_DELIVER_RADIUS) deliverOrb(orb);
     }
   });
+}
+
+// Orbs also come in by running into them. The drag is how you reach the ones
+// placed off the run line; anything the character actually touches should
+// not need a second thumb to claim it.
+function sweepOrbsByContact() {
+  const box = playerBox();
+  for (let i = 0; i < state.entities.length; i++) {
+    const e = state.entities[i];
+    if (e.type !== 'orb' || e.dead || e.held != null) continue;
+    if (overlaps(box, e)) deliverOrb(e);
+  }
 }
 
 function deliverOrb(orb) {
@@ -1687,12 +1708,41 @@ function drawGround(sky) {
   }
   gaps.sort(function (a, b) { return a.x - b.x; });
 
+  // The pit first: a hole has to be darker than everything around it, or it
+  // just merges with the background and stops reading as a hole at all.
+  for (let i = 0; i < gaps.length; i++) drawPit(gaps[i]);
+
   let x = left;
   for (let i = 0; i < gaps.length; i++) {
     if (gaps[i].x > x) drawGroundSpan(x, gaps[i].x);
     x = Math.max(x, gaps[i].x + gaps[i].w);
   }
   if (x < right) drawGroundSpan(x, right);
+}
+
+function drawPit(gap) {
+  const top = GROUND_Y;
+  const depth = REF_H - GROUND_Y;
+
+  // a void that fades to black, so the eye reads depth rather than a panel
+  const g = ctx.createLinearGradient(0, top, 0, REF_H);
+  g.addColorStop(0, '#0a0c11');
+  g.addColorStop(1, '#000000');
+  ctx.fillStyle = g;
+  ctx.fillRect(gap.x, top, gap.w, depth);
+
+  // both lips catch the light: this is the edge you are aiming to clear
+  ctx.fillStyle = '#6b7689';
+  ctx.fillRect(gap.x - 3, top - 2, 3, 4);
+  ctx.fillRect(gap.x + gap.w, top - 2, 3, 4);
+
+  // and the inner faces fall away into the dark
+  const face = ctx.createLinearGradient(0, top, 0, top + 26);
+  face.addColorStop(0, 'rgba(107,118,137,0.55)');
+  face.addColorStop(1, 'rgba(107,118,137,0)');
+  ctx.fillStyle = face;
+  ctx.fillRect(gap.x, top, 4, 26);
+  ctx.fillRect(gap.x + gap.w - 4, top, 4, 26);
 }
 
 let groundTint = COL.ground;
