@@ -90,15 +90,15 @@ const BREATHER_SEC = 30;       // after the run unlock, density drops for a whil
 const DAY_SECONDS = 240;
 const SKY_KEYS = [
   //  t     sky top      horizon        ground        hills far    hills near   stars
-  { t: 0.00, top: '#070912', hor: '#111a2e', gnd: '#12161f', far: '#0d1424', near: '#0a0f1a', stars: 1.00 },
-  { t: 0.14, top: '#0d1226', hor: '#2a2340', gnd: '#171a24', far: '#1a1a30', near: '#101322', stars: 0.55 },
+  { t: 0.00, top: '#111730', hor: '#1e2b4c', gnd: '#171c28', far: '#141d33', near: '#0d1220', stars: 1.00 },
+  { t: 0.14, top: '#161c38', hor: '#372c50', gnd: '#1b1f2b', far: '#231f3c', near: '#12162a', stars: 0.55 },
   { t: 0.24, top: '#1b2036', hor: '#5a3f48', gnd: '#1f2029', far: '#33293c', near: '#181a26', stars: 0.10 },
   { t: 0.38, top: '#243046', hor: '#4a5a70', gnd: '#242833', far: '#33415a', near: '#1d222e', stars: 0.00 },
   { t: 0.52, top: '#2b3a54', hor: '#61758c', gnd: '#282d38', far: '#3b4b66', near: '#212734', stars: 0.00 },
   { t: 0.68, top: '#243046', hor: '#7a5548', gnd: '#242833', far: '#43354a', near: '#1d222e', stars: 0.00 },
-  { t: 0.79, top: '#151a2c', hor: '#6b3b3f', gnd: '#1b1e28', far: '#2b2338', near: '#13161f', stars: 0.25 },
-  { t: 0.88, top: '#0b0f1c', hor: '#2b2440', gnd: '#151821', far: '#161a2c', near: '#0d1119', stars: 0.75 },
-  { t: 1.00, top: '#070912', hor: '#111a2e', gnd: '#12161f', far: '#0d1424', near: '#0a0f1a', stars: 1.00 }
+  { t: 0.79, top: '#1d2440', hor: '#7a464a', gnd: '#20242f', far: '#332943', near: '#161a26', stars: 0.25 },
+  { t: 0.88, top: '#141a33', hor: '#372e51', gnd: '#1a1e29', far: '#1e2439', near: '#101524', stars: 0.75 },
+  { t: 1.00, top: '#111730', hor: '#1e2b4c', gnd: '#171c28', far: '#141d33', near: '#0d1220', stars: 1.00 }
 ];
 
 // palette
@@ -1525,6 +1525,12 @@ function drawCelestialBody(sky) {
    default state costs the console nothing; delete the whole assets folder and
    the game is still unchanged underneath, at the price of one 404 log for the
    probe. */
+// how dark the sky is right now, 0 by day and 1 at the bottom of the night
+let currentSky = null;
+function nightAmount() {
+  return currentSky ? currentSky.stars : 0;
+}
+
 const sprites = { ready: false, manifest: null, image: null, anim: '', frame: 0, clock: 0, entities: {}, ground: {} };
 
 const ACTION_TO_ANIM = {
@@ -1608,6 +1614,26 @@ function tintedSprite(spec, colour) {
   return c;
 }
 
+// A flat one-colour stamp of a sprite, cached. Drawing it at small offsets
+// under the real sprite gives an outline — which is what stops a dark object
+// from disappearing into a dark sky.
+function silhouette(spec, colour) {
+  if (!spec.sil) spec.sil = {};
+  if (spec.sil[colour]) return spec.sil[colour];
+  const c = document.createElement('canvas');
+  c.width = spec.image.width;
+  c.height = spec.image.height;
+  const g = c.getContext('2d');
+  g.drawImage(spec.image, 0, 0);
+  g.globalCompositeOperation = 'source-in';
+  g.fillStyle = colour;
+  g.fillRect(0, 0, c.width, c.height);
+  spec.sil[colour] = c;
+  return c;
+}
+
+const RIM_OFFSETS = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, -1], [-1, 1], [1, 1]];
+
 // Which sprite an entity uses. Obstacles are keyed by shape, and enemyGun
 // alternates between two creatures so a patrol is not two clones.
 function spriteKeyFor(e) {
@@ -1623,17 +1649,31 @@ function drawEntitySprite(e, spec) {
   const sx = frame * spec.frameWidth;
   const img = (spec.tint ? tintedSprite(spec, orbColour()) : spec.image);
 
+  let dx, dy, dw, dh;
   if (spec.anchor === 'box') {
-    ctx.drawImage(img, sx, 0, spec.frameWidth, spec.frameHeight, e.x, e.y, e.w, e.h);
-    return;
+    dx = e.x; dy = e.y; dw = e.w; dh = e.h;
+  } else {
+    dh = spec.height || spec.frameHeight;
+    dw = spec.frameWidth * (dh / spec.frameHeight);
+    dx = e.x + e.w / 2 - dw / 2;
+    dy = spec.anchor === 'bottom' ? e.y + e.h - dh : e.y + e.h / 2 - dh / 2;
   }
 
-  const h = spec.height || spec.frameHeight;
-  const k = h / spec.frameHeight;
-  const w = spec.frameWidth * k;
-  const cx = e.x + e.w / 2 - w / 2;
-  const y = spec.anchor === 'bottom' ? e.y + e.h - h : e.y + e.h / 2 - h / 2;
-  ctx.drawImage(img, sx, 0, spec.frameWidth, spec.frameHeight, cx, y, w, h);
+  // The rim comes up as the light goes down. Orbs are exempt: they carry
+  // their own glow and a rim would only muddy the colour that matters.
+  const night = spec.tint ? 0 : nightAmount();
+  if (night > 0.03) {
+    const sil = silhouette(spec, '#c3d0e6');
+    const o = 1.2;
+    ctx.globalAlpha = 0.02 + night * 0.055;
+    for (let i = 0; i < RIM_OFFSETS.length; i++) {
+      ctx.drawImage(sil, sx, 0, spec.frameWidth, spec.frameHeight,
+                    dx + RIM_OFFSETS[i][0] * o, dy + RIM_OFFSETS[i][1] * o, dw, dh);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.drawImage(img, sx, 0, spec.frameWidth, spec.frameHeight, dx, dy, dw, dh);
 }
 
 function spriteAnimName() {
@@ -1675,6 +1715,7 @@ function render(now) {
   ctx.translate(-state.camera.x, 0);
 
   const sky = skyNow();
+  currentSky = sky;
   drawSky(sky);
   drawGround(sky);
   drawCarryThreads();
@@ -2094,6 +2135,27 @@ function drawPlayerSprite() {
   const dy = p.y - h + (a.offsetY || 0);
 
   ctx.save();
+  const night = nightAmount();
+  if (night > 0.03) {
+    if (!sprites.sil) {
+      const c = document.createElement('canvas');
+      c.width = sprites.image.width; c.height = sprites.image.height;
+      const g = c.getContext('2d');
+      g.drawImage(sprites.image, 0, 0);
+      g.globalCompositeOperation = 'source-in';
+      g.fillStyle = '#dce6f7';
+      g.fillRect(0, 0, c.width, c.height);
+      sprites.sil = c;
+    }
+    const o = 1.2;
+    ctx.globalAlpha = 0.02 + night * 0.05;
+    for (let i = 0; i < RIM_OFFSETS.length; i++) {
+      ctx.drawImage(sprites.sil, sx, sy, a.frameWidth, a.frameHeight,
+                    dx + RIM_OFFSETS[i][0] * o, dy + RIM_OFFSETS[i][1] * o, w, h);
+    }
+    ctx.globalAlpha = 1;
+  }
+
   ctx.drawImage(sprites.image, sx, sy, a.frameWidth, a.frameHeight, dx, dy, w, h);
   ctx.restore();
 }
