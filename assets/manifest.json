@@ -13,7 +13,7 @@
       "idle": {
         "row": 0,
         "frames": 4,
-        "fps": 8,
+        "fps": 4,
         "frameWidth": 50,
         "frameHeight": 37
       },

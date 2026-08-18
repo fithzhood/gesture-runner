@@ -12,7 +12,7 @@ Nine animations, all from the same artist, so there is no style seam:
 
 | game state | source animation | frames | fps |
 |---|---|---|---|
-| `idle` | `adventurer-idle` | 4 | 8 |
+| `idle` | `adventurer-idle` | 4 | 4 |
 | `walk` | `adventurer-run` | 6 | 9 |
 | `run` | `adventurer-run` | 6 | 15 |
 | `jump` | `adventurer-jump` | 4 | 11 |

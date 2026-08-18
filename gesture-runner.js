@@ -69,7 +69,7 @@ const SAVE_KEY = 'gesture-runner:meta';
 const SAFE_SECONDS = 2;        // no unlock fires within this much travel of a hazard
 const CELEBRATION_SEC = 2.4;
 const CELEBRATION_SLOW = 0.25;
-const NUDGE_AFTER = 10;        // seconds of stillness before the opening leans right
+const NUDGE_AFTER = 10;        // seconds of stillness before the opening offers a fourth orb
 const HAZARD_TYPES = ['obstacle', 'gate', 'enemyGun', 'enemySword', 'gap'];
 const BREATHER_SEC = 30;       // after the run unlock, density drops for a while
 
@@ -564,7 +564,7 @@ function pruneEntities() {
 
 function startOpening() {
   const px = state.player.x;
-  state.opening = { idle: 0, nudged: false, lean: 0 };
+  state.opening = { idle: 0, nudged: false };
   addOrb(px + 120, 168);
   addOrb(px + 186, 138);
   addOrb(px + 252, 176);
@@ -585,13 +585,12 @@ function updateOpening(dt) {
 
   if (!o.nudged && o.idle > NUDGE_AFTER) {
     o.nudged = true;
-    // a fourth orb drifts half-visible at the right edge, pulling the eye
-    // in the direction of travel. Still no words.
+    // A fourth orb drifts half-visible at the right edge, pulling the eye in
+    // the direction of travel. Still no words. The spec also had the body
+    // tip to the right, but a skew on a sprite reads as a rendering fault
+    // rather than a lean, so the orb carries the hint alone.
     addOrb(state.camera.x + state.view.worldW - 4, 150);
   }
-  // the character leans right once nudged
-  const wanted = o.nudged ? 1 : 0;
-  o.lean += (wanted - o.lean) * Math.min(1, dt * 3);
 }
 
 /* ---------------------------- the spawner ---------------------------
@@ -1726,16 +1725,6 @@ function drawEntityFlash(e) {
   ctx.globalAlpha = 1;
 }
 
-// the wordless hint: the body tips towards the direction of travel
-function applyLean() {
-  const lean = state.opening ? state.opening.lean : 0;
-  if (lean <= 0.01) return;
-  const p = state.player;
-  ctx.translate(p.x, p.y);
-  ctx.transform(1, 0, -lean * 0.3, 1, 0, 0);
-  ctx.translate(-p.x, -p.y);
-}
-
 function drawPlayerRect() {
   const p = state.player;
   const box = playerBox();
@@ -1749,7 +1738,6 @@ function drawPlayerRect() {
   }
 
   ctx.save();
-  applyLean();
 
   if (!state.run.alive) {
     // dead: the body drops flat, no words, no menu
@@ -1853,7 +1841,6 @@ function drawPlayerSprite() {
   const dy = p.y - h + (a.offsetY || 0);
 
   ctx.save();
-  applyLean();
   ctx.drawImage(sprites.image, sx, sy, a.frameWidth, a.frameHeight, dx, dy, w, h);
   ctx.restore();
 }
