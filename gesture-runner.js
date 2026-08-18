@@ -46,6 +46,13 @@ const DECEL_RATE = 900;   // flick left is the panic brake: it bites twice as ha
 const GRAVITY = 1250;
 const JUMP_V = 470;   // 0.75 s of airtime: 113 units of travel walking, 248 running
 const MELEE_RANGE = 84;
+
+// Orbs are carried, not tapped: you grab one and drag it to the character.
+const ORB_DELIVER_RADIUS = 42;  // how close a carried orb has to get to count
+const ORB_FOLLOW = 20;          // how fast a carried orb chases the finger
+const ORB_SPACING = 28;         // gap between orbs in a carried chain
+const ORB_LIFT = 24;            // the leader rides above the fingertip, which
+                                // on a phone is under the thumb otherwise
 const BULLET_SPEED = 520;
 const DEATH_PAUSE = 1.1;
 const SLIDE_DIST = 120;   // a slide is measured in ground covered, not seconds,
@@ -117,7 +124,7 @@ const COL = {
 /* ================================ 2. state =========================== */
 
 const state = {
-  meta: { totalXP: 0, unlocked: ['drag'] },
+  meta: { totalXP: 0, unlocked: ['drag'], taught: [] },
   run: { distance: 0, xpThisRun: 0, alive: true, time: 0 },
   player: {
     x: 0, y: GROUND_Y, vy: 0,
@@ -128,6 +135,7 @@ const state = {
   },
   entities: [],
   pointers: new Map(),   // pointerId -> gesture in progress
+  carry: new Map(),      // pointerId -> where that finger is, in world units
   actionQueue: [],       // semantic actions awaiting consumption
   camera: { x: 0 },
   particles: [],         // collection sparks; never touched by hit-testing
@@ -144,6 +152,7 @@ const state = {
 };
 
 let nextEntityId = 1;
+let grabCounter = 0;
 
 
 /* --------------------------- persistence ---------------------------- */
@@ -156,6 +165,7 @@ function loadMeta() {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed.totalXP !== 'number' || !Array.isArray(parsed.unlocked)) return;
     state.meta.totalXP = Math.max(0, parsed.totalXP);
+    state.meta.taught = Array.isArray(parsed.taught) ? parsed.taught.slice() : [];
     state.meta.unlocked = ['drag'];
     for (let i = 0; i < UNLOCKS.length; i++) {
       if (parsed.unlocked.indexOf(UNLOCKS[i].id) >= 0) state.meta.unlocked.push(UNLOCKS[i].id);
@@ -164,6 +174,7 @@ function loadMeta() {
     // corrupt save: start over, silently
     state.meta.totalXP = 0;
     state.meta.unlocked = ['drag'];
+    state.meta.taught = [];
   }
 }
 
@@ -171,7 +182,8 @@ function saveMeta() {
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       totalXP: state.meta.totalXP,
-      unlocked: state.meta.unlocked
+      unlocked: state.meta.unlocked,
+      taught: state.meta.taught
     }));
   } catch (err) { /* private mode, quota: play on regardless */ }
 }
@@ -350,7 +362,7 @@ function onPointerDown(e) {
     maxDist: 0,
     // world-space path drives orb harvesting
     wx: wx, wy: wy, pwx: wx, pwy: wy,
-    done: false, resp: null, collected: 0
+    done: false, resp: null, carrying: 0
   };
   state.pointers.set(e.pointerId, rec);
 
@@ -360,7 +372,7 @@ function onPointerDown(e) {
   // so the character reacts on the same frame as the touch.
   if (kind === 'player') startAnticipation();
 
-  if (kind === 'orb') collectOrb(target.ent, rec);
+  if (kind === 'orb') { grabOrb(target.ent, rec); emitCarry(rec); }
   if (kind === 'gate') registerMashTap(rec, target.ent);
 }
 
@@ -388,8 +400,11 @@ function onPointerMove(e) {
   }
 
   // Drag harvesting: any path that is not a player flick or an enemy swipe
-  // sweeps up the orbs it crosses.
-  if (kind === 'orb' || kind === 'world') dragCollect(rec);
+  // picks up the orbs it crosses and drags them along.
+  if (kind === 'orb' || kind === 'world') {
+    dragPickup(rec);
+    if (rec.carrying) emitCarry(rec);
+  }
 }
 
 function onPointerUp(e) {
@@ -418,6 +433,7 @@ function onPointerUp(e) {
     }
   }
 
+  releaseCarry(rec);
   releasePointer(e.pointerId);
 }
 
@@ -425,9 +441,10 @@ function onPointerCancel(e) {
   // Losing capture mid-gesture cancels it without emitting anything.
   const rec = state.pointers.get(e.pointerId);
   if (!rec) return;
-  if (rec.collected > 0) {
-    logGesture(rec, 'drag', 'collect', performance.now() - rec.t0, 'x' + rec.collected);
+  if (rec.carrying > 0) {
+    logGesture(rec, 'drag', 'dropped', performance.now() - rec.t0, 'x' + rec.carrying);
   }
+  releaseCarry(rec);
   releasePointer(e.pointerId);
 }
 
@@ -460,7 +477,7 @@ function handleTap(rec, kind) {
   if (kind === 'player') { emit(rec, 'jump', 'tap'); return; }
   if (isEnemyKind(kind)) { emit(rec, 'shoot', 'tap'); return; }
   if (kind === 'gate') return;            // already counted on pointerdown
-  if (kind === 'orb') { logGesture(rec, 'tap', 'collect', age, 'x' + rec.collected); return; }
+  if (kind === 'orb') { logGesture(rec, 'tap', 'grabbed then let go', age); return; }
   // a tap on empty background is a no-op, not a misfire
   logGesture(rec, 'tap', 'none', age);
 }
@@ -469,7 +486,7 @@ function endDrag(rec, gesture) {
   const kind = rec.target ? rec.target.kind : 'world';
   const age = performance.now() - rec.t0;
   if (kind === 'orb' || kind === 'world') {
-    logGesture(rec, gesture, 'collect', age, 'x' + rec.collected);
+    logGesture(rec, gesture, rec.carrying ? 'carry' : 'none', age, rec.carrying ? 'x' + rec.carrying : '');
   } else {
     logGesture(rec, gesture, 'unknown', age);
   }
@@ -483,6 +500,10 @@ function registerMashTap(rec, gate) {
   if (gate.taps.length >= MASH_TAPS) {
     gate.taps.length = 0;
     emit(rec, 'mash', 'mash x' + MASH_TAPS);
+  } else {
+    // a single tap does not open it, but it has to visibly answer, or
+    // there is nothing to tell the player that tapping is the idea
+    state.actionQueue.push({ type: 'gateTap', target: gate, pointerId: rec.id, t: now });
   }
 }
 
@@ -496,23 +517,36 @@ function segPointDist(ax, ay, bx, by, cx, cy) {
   return Math.hypot(cx - (ax + vx * t), cy - (ay + vy * t));
 }
 
-function dragCollect(rec) {
+function dragPickup(rec) {
   const pad = (MIN_TOUCH_PX / 2) / state.view.scale;
   for (let i = 0; i < state.entities.length; i++) {
     const e = state.entities[i];
-    if (e.type !== 'orb' || e.dead) continue;
+    if (e.type !== 'orb' || e.dead || e.held != null) continue;
     const cx = e.x + e.w / 2, cy = e.y + e.h / 2;
     const d = segPointDist(rec.pwx, rec.pwy, rec.wx, rec.wy, cx, cy);
-    if (d <= e.w / 2 + pad) collectOrb(e, rec);
+    if (d <= e.w / 2 + pad) grabOrb(e, rec);
   }
 }
 
-function collectOrb(orb, rec) {
-  if (orb.dead) return;
-  orb.dead = true;
-  orb.value = orbValue();
-  rec.collected++;
-  state.actionQueue.push({ type: 'collect', target: orb, pointerId: rec.id, t: performance.now() });
+// Picking an orb up is not the same as banking it. It sticks to the finger
+// and only counts once it reaches the character.
+function grabOrb(orb, rec) {
+  if (orb.dead || orb.held != null) return;
+  orb.held = rec.id;
+  orb.grabSeq = ++grabCounter;
+  rec.carrying++;
+  state.actionQueue.push({ type: 'grab', target: orb, pointerId: rec.id, t: performance.now() });
+}
+
+// The recognizer publishes where the finger is as a semantic action; no
+// game system ever reaches into state.pointers for it.
+function emitCarry(rec) {
+  state.actionQueue.push({ type: 'carry', pointerId: rec.id, x: rec.wx, y: rec.wy, t: performance.now() });
+}
+
+function releaseCarry(rec) {
+  if (!rec.carrying) return;
+  state.actionQueue.push({ type: 'release', pointerId: rec.id, t: performance.now() });
 }
 
 canvas.addEventListener('pointerdown', onPointerDown, { passive: false });
@@ -529,7 +563,7 @@ function addEntity(props) {
   const e = {
     id: nextEntityId++,
     type: 'orb', x: 0, y: 0, w: 18, h: 18,
-    dead: false, flash: 0, value: 1
+    dead: false, flash: 0, shake: 0, value: 1
   };
   for (const k in props) e[k] = props[k];
   state.entities.push(e);
@@ -552,6 +586,7 @@ function pruneEntities() {
   const left = state.camera.x - 160;
   for (let i = state.entities.length - 1; i >= 0; i--) {
     const e = state.entities[i];
+    if (e.held != null && !e.dead) continue;
     if (e.dead || e.x + e.w < left) state.entities.splice(i, 1);
   }
 }
@@ -575,7 +610,7 @@ function updateOpening(dt) {
   if (!o) return;
 
   if (state.player.speedState !== 'still' || state.player.speed > 0) {
-    state.opening = null;                    // the flick was found: the run begins
+    state.opening = null;                  // the flick was found: the run begins
     world.nextX = state.camera.x + state.view.worldW + 60;
     return;
   }
@@ -607,7 +642,7 @@ const CHUNKS = [
   { id: 'arc', tier: 0, needs: [], len: 500, items: [
     { t: 'orbArc', x: 90, n: 6, y: 204, dx: 38, rise: 60 }
   ]},
-  { id: 'gate', tier: 0, needs: [], len: 540, items: [
+  { id: 'gate', tier: 0, needs: [], minXP: 18, len: 540, items: [
     { t: 'gate', x: 210 },
     { t: 'orbArc', x: 260, n: 4, y: 192, dx: 36, rise: 46 }
   ]},
@@ -722,6 +757,7 @@ function chunkPool(tier) {
   for (let i = 0; i < CHUNKS.length; i++) {
     const c = CHUNKS[i];
     if (c.tier > tier) continue;
+    if (c.minXP && state.meta.totalXP < c.minXP) continue;
     let ok = true;
     for (let j = 0; j < c.needs.length; j++) if (!isUnlocked(c.needs[j])) ok = false;
     if (ok) pool.push(c);
@@ -771,6 +807,23 @@ function hazardWithin(seconds) {
     if (e.x + e.w >= p.x - 20 && e.x <= reach) return true;
   }
   return false;
+}
+
+// The strength gate is available from the very first second, but nothing in
+// the game ever showed that it breaks under repeated taps — so the first
+// wall a new player meets looks like a wall they lack the ability for.
+// It gets the same demonstration an unlock gets, once per profile.
+function teachMash() {
+  if (state.celebration) return;
+  if (state.meta.taught.indexOf('mash') >= 0) return;
+  // the speed never drops at a gate — the clamp on position is what says
+  // "you are stuck", so that is what this waits for
+  const gate = state.haltedBy;
+  if (!gate || gate.type !== 'gate' || gate.dead) return;
+
+  state.meta.taught.push('mash');
+  saveMeta();
+  state.celebration = { id: 'mash', demo: 'mash', ent: gate, t: 0, dur: CELEBRATION_SEC };
 }
 
 function checkUnlocks() {
@@ -900,8 +953,32 @@ function applyAction(a) {
       }
       break;
 
+    case 'grab':
+      if (a.target) a.target.flash = 0.12;      // it answers the touch at once
+      break;
+
+    case 'gateTap':
+      if (a.target) {
+        a.target.flash = 0.1;
+        a.target.shake = 0.16;
+        state.shake = Math.max(state.shake, 1.6);
+      }
+      break;
+
+    case 'carry':
+      state.carry.set(a.pointerId, { x: a.x, y: a.y });
+      break;
+
+    case 'release':
+      state.carry.delete(a.pointerId);
+      for (let i = 0; i < state.entities.length; i++) {
+        const e = state.entities[i];
+        if (e.type === 'orb' && e.held === a.pointerId) e.held = null;
+      }
+      break;
+
     case 'collect': {
-      // value is decided at the instant of collection, by current speed
+      // value is decided at the instant it reaches the character, by speed
       const gain = a.target && a.target.value ? a.target.value : orbValue();
       state.meta.totalXP += gain;
       state.run.xpThisRun += gain;
@@ -1010,6 +1087,7 @@ function stopLine() {
   const p = state.player;
   if (!p.grounded) return null;
   let line = null;
+  state.blockedBy = null;
 
   for (let i = 0; i < state.entities.length; i++) {
     const e = state.entities[i];
@@ -1017,7 +1095,7 @@ function stopLine() {
 
     if (e.type === 'gate') {
       const edge = e.x - 14;
-      if (p.x <= edge + 3 && (line === null || edge < line)) line = edge;
+      if (p.x <= edge + 3 && (line === null || edge < line)) { line = edge; state.blockedBy = e; }
     } else if (e.type === 'obstacle' && e.shape === 'block' && p.speedState !== 'running') {
       // blunt block: bumps and halts while walking, no damage
       const edge = e.x - 14;
@@ -1115,8 +1193,12 @@ function updatePlayer(dt) {
     if (!p.bumped) shakeScreen(2);
     p.x = line;
     p.bumped = 0.15;
+    state.haltedBy = state.blockedBy;
   } else if (p.bumped > 0) {
+    state.haltedBy = null;
     p.bumped = Math.max(0, p.bumped - dt);
+  } else {
+    state.haltedBy = null;
   }
   state.run.distance += step;
 
@@ -1177,7 +1259,73 @@ function updateEntities(dt) {
   for (let i = 0; i < state.entities.length; i++) {
     const e = state.entities[i];
     if (e.flash > 0) e.flash = Math.max(0, e.flash - dt);
+    if (e.shake > 0) e.shake = Math.max(0, e.shake - dt);
   }
+  updateCarriedOrbs(dt);
+}
+
+// Each finger tows a chain: the first orb chases the fingertip, the rest
+// chase the one in front. They bank one after another as the chain reaches
+// the character, which is what makes delivering a run of them feel like
+// something rather than a single event.
+function updateCarriedOrbs(dt) {
+  if (!state.carry.size) return;
+
+  const k = 1 - Math.exp(-dt * ORB_FOLLOW);
+  const pb = playerBox();
+  const px = pb.x + pb.w / 2;
+  const py = pb.y + pb.h / 2;
+
+  state.carry.forEach(function (pos, id) {
+    const chain = [];
+    for (let i = 0; i < state.entities.length; i++) {
+      const e = state.entities[i];
+      if (e.type === 'orb' && !e.dead && e.held === id) chain.push(e);
+    }
+    if (!chain.length) return;
+    chain.sort(function (a, b) { return a.grabSeq - b.grabSeq; });
+
+    let tx = pos.x;
+    let ty = pos.y - ORB_LIFT;
+
+    for (let i = 0; i < chain.length; i++) {
+      const orb = chain[i];
+      const cx = orb.x + orb.w / 2;
+      const cy = orb.y + orb.h / 2;
+
+      let gx = tx, gy = ty;
+      if (i > 0) {
+        // Hold station exactly ORB_SPACING behind the one in front — pushing
+        // apart when too close, not only pulling in when too far. Without
+        // the push, a fast sweep leaves them in a heap and you cannot see
+        // how many you are carrying.
+        let ox = cx - tx, oy = cy - ty;
+        let len = Math.hypot(ox, oy);
+        if (len < 0.001) {
+          const ang = i * 1.1;                  // deterministic fan when stacked
+          ox = Math.cos(ang); oy = Math.sin(ang); len = 1;
+        }
+        gx = tx + (ox / len) * ORB_SPACING;
+        gy = ty + (oy / len) * ORB_SPACING;
+      }
+
+      orb.x += (gx - cx) * k;
+      orb.y += (gy - cy) * k;
+
+      tx = orb.x + orb.w / 2;
+      ty = orb.y + orb.h / 2;
+
+      if (Math.hypot(tx - px, ty - py) <= ORB_DELIVER_RADIUS) deliverOrb(orb);
+    }
+  });
+}
+
+function deliverOrb(orb) {
+  if (orb.dead) return;
+  orb.dead = true;
+  orb.held = null;
+  orb.value = orbValue();
+  state.actionQueue.push({ type: 'collect', target: orb, pointerId: -1, t: performance.now() });
 }
 
 function orbColour() {
@@ -1209,6 +1357,7 @@ function update(dt) {
   updateSpriteAnim(play);
   resolveHazards();
   updateSpawner();
+  teachMash();
   checkUnlocks();
 }
 
@@ -1507,6 +1656,7 @@ function render(now) {
   const sky = skyNow();
   drawSky(sky);
   drawGround(sky);
+  drawCarryThreads();
   drawEntities();
   drawParticles();
   drawPointerTrails();
@@ -1656,6 +1806,47 @@ function drawLabel(text, cx, cy) {
   ctx.fillText(text, cx, cy);
 }
 
+// A thread from the fingertip through the chain to the character: it says
+// where these orbs are going without a word of instruction.
+function drawCarryThreads() {
+  if (!state.carry.size) return;
+  const oc = orbColour();
+  const pb = playerBox();
+  const px = pb.x + pb.w / 2;
+  const py = pb.y + pb.h / 2;
+
+  state.carry.forEach(function (pos, id) {
+    const chain = [];
+    for (let i = 0; i < state.entities.length; i++) {
+      const e = state.entities[i];
+      if (e.type === 'orb' && !e.dead && e.held === id) chain.push(e);
+    }
+    if (!chain.length) return;
+    chain.sort(function (a, b) { return a.grabSeq - b.grabSeq; });
+
+    ctx.strokeStyle = oc;
+    ctx.lineWidth = 1.6;
+    ctx.globalAlpha = 0.30;
+    ctx.beginPath();
+    ctx.moveTo(pos.x, pos.y - ORB_LIFT);
+    for (let i = 0; i < chain.length; i++) {
+      ctx.lineTo(chain[i].x + chain[i].w / 2, chain[i].y + chain[i].h / 2);
+    }
+    ctx.stroke();
+
+    // and a fainter one from the last orb to the character, the destination
+    const last = chain[chain.length - 1];
+    ctx.globalAlpha = 0.14;
+    ctx.setLineDash([4, 5]);
+    ctx.beginPath();
+    ctx.moveTo(last.x + last.w / 2, last.y + last.h / 2);
+    ctx.lineTo(px, py);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  });
+}
+
 function drawEntities() {
   const oc = orbColour();
   for (let i = 0; i < state.entities.length; i++) {
@@ -1664,13 +1855,21 @@ function drawEntities() {
     if (e.type === 'gap') continue;             // a gap is an absence of ground
 
     // The orb's halo is drawn either way: the colour of that glow is the
-    // player's main feedback about how much their greed is paying.
+    // player's main feedback about how much their greed is paying. A carried
+    // one burns brighter, so the hand reads as full.
     if (e.type === 'orb') {
       const gx = e.x + e.w / 2, gy = e.y + e.h / 2;
-      ctx.globalAlpha = 0.20;
+      const carried = e.held != null;
+      ctx.globalAlpha = carried ? 0.42 : 0.20;
       ctx.fillStyle = oc;
-      ctx.beginPath(); ctx.arc(gx, gy, e.w / 2 + 6, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(gx, gy, e.w / 2 + (carried ? 7 : 6), 0, Math.PI * 2); ctx.fill();
       ctx.globalAlpha = 1;
+    }
+
+    const shaking = e.shake > 0;
+    if (shaking) {
+      ctx.save();
+      ctx.translate((Math.random() - 0.5) * e.shake * 26, 0);
     }
 
     const spec = sprites.entities[spriteKeyFor(e)];
@@ -1681,6 +1880,7 @@ function drawEntities() {
       drawEntitySprite(e, spec);
       ctx.globalAlpha = 1;
       drawEntityFlash(e);
+      if (shaking) ctx.restore();
       continue;
     }
 
@@ -1689,12 +1889,14 @@ function drawEntities() {
     if (e.type === 'orb') {
       ctx.fillStyle = oc;
       ctx.beginPath(); ctx.arc(e.x + e.w / 2, e.y + e.h / 2, e.w / 2, 0, Math.PI * 2); ctx.fill();
+      if (shaking) ctx.restore();
       continue;
     }
 
     if (e.type === 'bullet') {
       ctx.fillStyle = COL.bullet;
       ctx.fillRect(e.x, e.y, e.w, e.h);
+      if (shaking) ctx.restore();
       continue;
     }
 
@@ -1714,6 +1916,7 @@ function drawEntities() {
 
     drawObstacleShape(e, colour, label);
     drawEntityFlash(e);
+    if (shaking) ctx.restore();
   }
 }
 
@@ -1765,11 +1968,11 @@ function drawCelebration() {
   if (!c) return;
 
   const fade = c.t > c.dur - 0.4 ? (c.dur - c.t) / 0.4 : 1;
-  const strokes = c.demo === 'flickUpAir' ? 2 : 1;
+  const strokes = c.demo === 'mash' ? 3 : (c.demo === 'flickUpAir' ? 2 : 1);
 
   for (let s = 0; s < strokes; s++) {
-    const loop = 0.9;
-    const t = c.t - s * 0.28;
+    const loop = c.demo === 'mash' ? 0.66 : 0.9;
+    const t = c.t - s * (c.demo === 'mash' ? 0.13 : 0.28);
     if (t < 0) continue;
     const k = (t % loop) / loop;
     const travel = Math.min(1, k / 0.7);
@@ -1988,6 +2191,7 @@ function startRun() {
   state.actionQueue.length = 0;
   state.particles.length = 0;
   state.celebration = null;
+  state.carry.clear();
   state.opening = null;
   state.breatherUntil = 0;
   state.run = { distance: 0, xpThisRun: 0, alive: true, time: 0 };
