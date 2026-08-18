@@ -90,15 +90,15 @@ const BREATHER_SEC = 30;       // after the run unlock, density drops for a whil
 const DAY_SECONDS = 240;
 const SKY_KEYS = [
   //  t     sky top      horizon        ground        hills far    hills near   stars
-  { t: 0.00, top: '#111730', hor: '#1e2b4c', gnd: '#171c28', far: '#141d33', near: '#0d1220', stars: 1.00 },
-  { t: 0.14, top: '#161c38', hor: '#372c50', gnd: '#1b1f2b', far: '#231f3c', near: '#12162a', stars: 0.55 },
-  { t: 0.24, top: '#3d4d7d', hor: '#c08672', gnd: '#2f342f', far: '#5c5546', near: '#333c2c', stars: 0.10 },
-  { t: 0.38, top: '#5182c4', hor: '#bcd6e8', gnd: '#3c4536', far: '#7d9c74', near: '#42593d', stars: 0.00 },
-  { t: 0.52, top: '#5e97dc', hor: '#d2e6f4', gnd: '#45503c', far: '#8bb07e', near: '#4d6845', stars: 0.00 },
-  { t: 0.68, top: '#5480bd', hor: '#dda878', gnd: '#3e4638', far: '#849069', near: '#455239', stars: 0.00 },
-  { t: 0.79, top: '#33396a', hor: '#b2665d', gnd: '#2c3030', far: '#4e4646', near: '#2a3130', stars: 0.25 },
-  { t: 0.88, top: '#141a33', hor: '#372e51', gnd: '#1a1e29', far: '#1e2439', near: '#101524', stars: 0.75 },
-  { t: 1.00, top: '#111730', hor: '#1e2b4c', gnd: '#171c28', far: '#141d33', near: '#0d1220', stars: 1.00 }
+  { t: 0.00, top: '#1b2447', hor: '#1e2b4c', gnd: '#171c28', far: '#141d33', near: '#0d1220', stars: 1.00 },
+  { t: 0.14, top: '#232c53', hor: '#372c50', gnd: '#1b1f2b', far: '#231f3c', near: '#12162a', stars: 0.55 },
+  { t: 0.24, top: '#52659a', hor: '#c08672', gnd: '#2f342f', far: '#5c5546', near: '#333c2c', stars: 0.10 },
+  { t: 0.38, top: '#6ea0dc', hor: '#bcd6e8', gnd: '#3c4536', far: '#7d9c74', near: '#42593d', stars: 0.00 },
+  { t: 0.52, top: '#79b2ee', hor: '#d2e6f4', gnd: '#45503c', far: '#8bb07e', near: '#4d6845', stars: 0.00 },
+  { t: 0.68, top: '#6c9bd6', hor: '#dda878', gnd: '#3e4638', far: '#849069', near: '#455239', stars: 0.00 },
+  { t: 0.79, top: '#434a81', hor: '#b2665d', gnd: '#2c3030', far: '#4e4646', near: '#2a3130', stars: 0.25 },
+  { t: 0.88, top: '#1f2748', hor: '#372e51', gnd: '#1a1e29', far: '#1e2439', near: '#101524', stars: 0.75 },
+  { t: 1.00, top: '#1b2447', hor: '#1e2b4c', gnd: '#171c28', far: '#141d33', near: '#0d1220', stars: 1.00 }
 ];
 
 // palette
@@ -1369,12 +1369,20 @@ function update(dt) {
    back to a sky that has moved on is most of what makes it feel gentle.
    -------------------------------------------------------------------- */
 
-function hexToRgb(h) {
-  return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+// Accepts both '#rrggbb' and the 'rgb(r,g,b)' that skyNow() hands back.
+// Feeding the latter to a hex parser silently produced NaN, and an invalid
+// fillStyle is ignored rather than throwing — which is why the far ridge
+// came out painted in whatever colour happened to be set before it.
+function toRgb(c) {
+  if (c.charCodeAt(0) === 35) {
+    return [parseInt(c.slice(1, 3), 16), parseInt(c.slice(3, 5), 16), parseInt(c.slice(5, 7), 16)];
+  }
+  const m = c.match(/-?\d+/g);
+  return [+m[0], +m[1], +m[2]];
 }
 
 function mixHex(a, b, k) {
-  const x = hexToRgb(a), y = hexToRgb(b);
+  const x = toRgb(a), y = toRgb(b);
   return 'rgb(' + Math.round(x[0] + (y[0] - x[0]) * k) + ',' +
                   Math.round(x[1] + (y[1] - x[1]) * k) + ',' +
                   Math.round(x[2] + (y[2] - x[2]) * k) + ')';
@@ -1415,11 +1423,21 @@ function updateSky(dt) {
   state.sky.t = (state.sky.t + dt / DAY_SECONDS) % 1;
 }
 
-// a deterministic ridge, so the hills are stable however far you run
+// A deterministic ridge, so the hills are stable however far you run — the
+// same x always gives the same skyline. The slow swell is what stops it
+// being one repeating bump: you cross flats, then a range, then flats.
 function ridge(x, seed, amp, wave) {
-  return Math.sin(x / wave + seed) * amp
-       + Math.sin(x / (wave * 0.37) + seed * 2.3) * amp * 0.42
-       + Math.sin(x / (wave * 0.13) + seed * 4.1) * amp * 0.16;
+  const swell = 0.45 + 0.55 * Math.sin(x / 1450 + seed * 3.1)
+                            * Math.cos(x / 3100 + seed);
+  return (Math.sin(x / wave + seed) * amp
+        + Math.sin(x / (wave * 0.37) + seed * 2.3) * amp * 0.42
+        + Math.sin(x / (wave * 0.13) + seed * 4.1) * amp * 0.16) * (0.5 + swell);
+}
+
+// a cheap stable hash, so a prop at a given x is always the same prop
+function hash1(n) {
+  const v = Math.sin(n * 127.1) * 43758.5453;
+  return v - Math.floor(v);
 }
 
 function drawHillLayer(colour, parallax, baseY, amp, wave, seed) {
@@ -1436,6 +1454,81 @@ function drawHillLayer(colour, parallax, baseY, amp, wave, seed) {
   ctx.lineTo(state.camera.x + v.worldW + step, REF_H);
   ctx.closePath();
   ctx.fill();
+}
+
+// Trees and rocks standing on a ridge. They are the layer that actually
+// says you are travelling: a hill profile slides, but a tree arrives,
+// passes and leaves.
+function drawHillProps(colour, parallax, baseY, amp, wave, seed, scale) {
+  const v = state.view;
+  const off = state.camera.x * parallax;
+  const step = 78;
+  const first = Math.floor((off - step) / step) * step;
+  ctx.fillStyle = colour;
+
+  for (let wx = first; wx < off + v.worldW + step; wx += step) {
+    const h = hash1(wx * 0.37 + seed);
+    if (h < 0.42) continue;                       // most slots stay empty
+    const jitter = (hash1(wx * 1.7 + seed) - 0.5) * step * 0.8;
+    const px = wx + jitter;
+    const sx = state.camera.x + (px - off);
+    const gy = baseY + ridge(px, seed, amp, wave) + 1;
+    const size = (7 + hash1(px * 3.1 + seed) * 7) * scale;
+
+    if (h > 0.72) {
+      // conifer: a stack of three tapering tiers
+      const w = size * 0.62;
+      for (let tier = 0; tier < 3; tier++) {
+        const ty = gy - size * (0.34 + tier * 0.30);
+        const tw = w * (1 - tier * 0.24);
+        ctx.beginPath();
+        ctx.moveTo(sx, ty - size * 0.42);
+        ctx.lineTo(sx - tw, ty);
+        ctx.lineTo(sx + tw, ty);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.fillRect(sx - size * 0.07, gy - size * 0.36, size * 0.14, size * 0.36);
+    } else if (h > 0.55) {
+      // a round-headed tree
+      ctx.beginPath();
+      ctx.arc(sx, gy - size * 0.62, size * 0.44, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillRect(sx - size * 0.07, gy - size * 0.62, size * 0.14, size * 0.62);
+    } else {
+      // a boulder
+      ctx.beginPath();
+      ctx.ellipse(sx, gy - size * 0.16, size * 0.42, size * 0.26, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+// Cloud banks, slower than anything else and gone by night.
+function drawClouds(sky) {
+  const day = 1 - sky.stars;
+  if (day < 0.05) return;
+  const v = state.view;
+  const off = state.camera.x * 0.05;
+  const step = 240;
+  const first = Math.floor((off - step) / step) * step;
+
+  ctx.globalAlpha = 0.10 + day * 0.14;
+  ctx.fillStyle = '#ffffff';
+  for (let wx = first; wx < off + v.worldW + step; wx += step) {
+    const h = hash1(wx * 0.11 + 5.3);
+    if (h < 0.35) continue;
+    const sx = state.camera.x + (wx - off) + (h - 0.5) * step * 0.6;
+    const cy = 34 + hash1(wx * 0.53) * 92;
+    const w = 44 + hash1(wx * 0.91) * 62;
+    const hgt = w * 0.24;
+    ctx.beginPath();
+    ctx.ellipse(sx, cy, w * 0.5, hgt, 0, 0, Math.PI * 2);
+    ctx.ellipse(sx - w * 0.26, cy + hgt * 0.32, w * 0.30, hgt * 0.72, 0, 0, Math.PI * 2);
+    ctx.ellipse(sx + w * 0.28, cy + hgt * 0.28, w * 0.26, hgt * 0.66, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
 }
 
 function drawSky(sky) {
@@ -1465,8 +1558,44 @@ function drawSky(sky) {
   }
 
   drawCelestialBody(sky);
-  drawHillLayer(sky.far, 0.18, GROUND_Y - 54, 22, 210, 1.7);
-  drawHillLayer(sky.near, 0.42, GROUND_Y - 20, 15, 130, 4.2);
+  drawClouds(sky);
+
+  // four depths, each slower than the one in front of it
+  const haze = mixHex(sky.far, sky.top, 0.5);
+  drawHillLayer(haze, 0.08, GROUND_Y - 92, 34, 330, 0.6);
+  drawHillLayer(sky.far, 0.20, GROUND_Y - 54, 22, 210, 1.7);
+  drawHillProps(mixHex(sky.far, sky.near, 0.55), 0.20, GROUND_Y - 54, 22, 210, 1.7, 0.72);
+  drawHillLayer(sky.near, 0.44, GROUND_Y - 20, 15, 130, 4.2);
+  drawHillProps(mixHex(sky.near, '#000000', 0.3), 0.44, GROUND_Y - 20, 15, 130, 4.2, 1);
+}
+
+// The moon, cut once into an offscreen canvas and reused. Built big and
+// drawn small, so the curve of the crescent stays clean at any screen size.
+const MOON_PAD = 1.12;
+let moonSprite = null;
+
+function moonCanvas() {
+  if (moonSprite) return moonSprite;
+  const R = 120;
+  const S = Math.ceil(R * 2 * MOON_PAD);
+  const c = document.createElement('canvas');
+  c.width = S; c.height = S;
+  const g = c.getContext('2d');
+
+  g.fillStyle = '#e4ebf8';
+  g.beginPath(); g.arc(S / 2, S / 2, R, 0, Math.PI * 2); g.fill();
+
+  // a couple of faint maria, so the lit face is not a blank chip
+  g.fillStyle = 'rgba(150,163,190,0.5)';
+  g.beginPath(); g.arc(S / 2 - R * 0.34, S / 2 + R * 0.26, R * 0.20, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(S / 2 - R * 0.12, S / 2 - R * 0.40, R * 0.13, 0, Math.PI * 2); g.fill();
+
+  // and the bite is removed, not covered
+  g.globalCompositeOperation = 'destination-out';
+  g.beginPath(); g.arc(S / 2 + R * 0.46, S / 2 - R * 0.30, R * 0.94, 0, Math.PI * 2); g.fill();
+
+  moonSprite = c;
+  return c;
 }
 
 // sun by day, moon by night, on the same slow arc
@@ -1497,19 +1626,18 @@ function drawCelestialBody(sky) {
     return;
   }
 
-  const core = '#dfe6f5';
-  const halo = ctx.createRadialGradient(x, y, r * 0.8, x, y, r * 3.2);
-  halo.addColorStop(0, core);
-  halo.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.globalAlpha = 0.22;
+  const halo = ctx.createRadialGradient(x, y, r * 0.7, x, y, r * 3.0);
+  halo.addColorStop(0, 'rgba(214,226,247,0.5)');
+  halo.addColorStop(1, 'rgba(214,226,247,0)');
   ctx.fillStyle = halo;
-  ctx.beginPath(); ctx.arc(x, y, r * 3.2, 0, Math.PI * 2); ctx.fill();
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = core;
-  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
-  // bite a crescent out of the moon with the sky behind it
-  ctx.fillStyle = sky.top;
-  ctx.beginPath(); ctx.arc(x + r * 0.42, y - r * 0.3, r * 0.92, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y, r * 3.0, 0, Math.PI * 2); ctx.fill();
+
+  // The crescent is cut out of the disc rather than painted over with a
+  // guess at the sky colour. The old version filled the bite with the
+  // gradient's top stop, which is not the colour behind the moon at any
+  // height it actually sits at, so the two circles never lined up.
+  const m = moonCanvas();
+  ctx.drawImage(m, x - r * MOON_PAD, y - r * MOON_PAD, r * 2 * MOON_PAD, r * 2 * MOON_PAD);
 }
 
 
