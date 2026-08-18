@@ -92,11 +92,11 @@ const SKY_KEYS = [
   //  t     sky top      horizon        ground        hills far    hills near   stars
   { t: 0.00, top: '#111730', hor: '#1e2b4c', gnd: '#171c28', far: '#141d33', near: '#0d1220', stars: 1.00 },
   { t: 0.14, top: '#161c38', hor: '#372c50', gnd: '#1b1f2b', far: '#231f3c', near: '#12162a', stars: 0.55 },
-  { t: 0.24, top: '#1b2036', hor: '#5a3f48', gnd: '#1f2029', far: '#33293c', near: '#181a26', stars: 0.10 },
-  { t: 0.38, top: '#243046', hor: '#4a5a70', gnd: '#242833', far: '#33415a', near: '#1d222e', stars: 0.00 },
-  { t: 0.52, top: '#2b3a54', hor: '#61758c', gnd: '#282d38', far: '#3b4b66', near: '#212734', stars: 0.00 },
-  { t: 0.68, top: '#243046', hor: '#7a5548', gnd: '#242833', far: '#43354a', near: '#1d222e', stars: 0.00 },
-  { t: 0.79, top: '#1d2440', hor: '#7a464a', gnd: '#20242f', far: '#332943', near: '#161a26', stars: 0.25 },
+  { t: 0.24, top: '#2e3a63', hor: '#a06a5e', gnd: '#2b2f3c', far: '#4a3c55', near: '#232838', stars: 0.10 },
+  { t: 0.38, top: '#3f639e', hor: '#93b0c9', gnd: '#39404f', far: '#5b7699', near: '#333c4e', stars: 0.00 },
+  { t: 0.52, top: '#4c79ba', hor: '#b3cbdd', gnd: '#414a5b', far: '#6c8cae', near: '#3b4658', stars: 0.00 },
+  { t: 0.68, top: '#3f5f96', hor: '#c08a63', gnd: '#39404f', far: '#5c5470', near: '#333c4e', stars: 0.00 },
+  { t: 0.79, top: '#2a3157', hor: '#9c5a55', gnd: '#2a2e3c', far: '#42364f', near: '#22273a', stars: 0.25 },
   { t: 0.88, top: '#141a33', hor: '#372e51', gnd: '#1a1e29', far: '#1e2439', near: '#101524', stars: 0.75 },
   { t: 1.00, top: '#111730', hor: '#1e2b4c', gnd: '#171c28', far: '#141d33', near: '#0d1220', stars: 1.00 }
 ];
@@ -159,37 +159,21 @@ let nextEntityId = 1;
 let grabCounter = 0;
 
 
-/* --------------------------- persistence ---------------------------- */
+/* ------------------------ progression lifetime -----------------------
+   Every launch strips the character back to nothing and the ladder is
+   climbed again from the three opening orbs. Dying does not cost you
+   anything within a session; closing the game does.
 
-function loadMeta() {
-  let raw = null;
-  try { raw = localStorage.getItem(SAVE_KEY); } catch (err) { raw = null; }
-  if (!raw) return;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed.totalXP !== 'number' || !Array.isArray(parsed.unlocked)) return;
-    state.meta.totalXP = Math.max(0, parsed.totalXP);
-    state.meta.taught = Array.isArray(parsed.taught) ? parsed.taught.slice() : [];
-    state.meta.unlocked = ['drag'];
-    for (let i = 0; i < UNLOCKS.length; i++) {
-      if (parsed.unlocked.indexOf(UNLOCKS[i].id) >= 0) state.meta.unlocked.push(UNLOCKS[i].id);
-    }
-  } catch (err) {
-    // corrupt save: start over, silently
-    state.meta.totalXP = 0;
-    state.meta.unlocked = ['drag'];
-    state.meta.taught = [];
-  }
-}
+   This overrides the spec, which had unlocks persist across sessions.
+   ------------------------------------------------------------------- */
 
-function saveMeta() {
-  try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify({
-      totalXP: state.meta.totalXP,
-      unlocked: state.meta.unlocked,
-      taught: state.meta.taught
-    }));
-  } catch (err) { /* private mode, quota: play on regardless */ }
+function resetProgression() {
+  state.meta.totalXP = 0;
+  state.meta.unlocked = ['drag'];
+  state.meta.taught = [];
+  // an old save from when progression did persist would otherwise sit
+  // there forever, unread
+  try { localStorage.removeItem(SAVE_KEY); } catch (err) { /* private mode */ }
 }
 
 function isUnlocked(id) {
@@ -826,7 +810,6 @@ function teachMash() {
   if (!gate || gate.type !== 'gate' || gate.dead) return;
 
   state.meta.taught.push('mash');
-  saveMeta();
   state.celebration = { id: 'mash', demo: 'mash', ent: gate, t: 0, dur: CELEBRATION_SEC };
 }
 
@@ -843,7 +826,6 @@ function checkUnlocks() {
 
 function grantUnlock(unlock) {
   state.meta.unlocked.push(unlock.id);
-  saveMeta();
 
   let demoEnt = null;
   if (unlock.spawn) demoEnt = spawnDemoEntity(unlock.spawn);
@@ -1137,7 +1119,6 @@ function killPlayer(cause) {
   burst(state.player.x, state.player.y - 20, COL.orbRunning, 16, 170);
   shakeScreen(9);
   state.player.cause = cause;
-  saveMeta();
 }
 
 function resolveHazards() {
@@ -2204,8 +2185,9 @@ dbgBtn.addEventListener('pointercancel', function () {
   dbgPressTimer = null;
 });
 
+// Long-pressing the debug dot restarts the ladder without closing the app.
+// Since nothing is saved any more, that is simply a reload.
 function clearProfile() {
-  try { localStorage.removeItem('gesture-runner:meta'); } catch (err) { /* private mode */ }
   dbgBtn.animate(
     [{ background: '#3ddc84' }, { background: 'rgba(20,24,32,0.5)' }],
     { duration: 500 }
@@ -2337,7 +2319,7 @@ function init() {
   if (isCapacitorNative()) document.body.classList.add('capacitor');
   resize();
   buildSkyDecor();
-  loadMeta();
+  resetProgression();
   loadSprites();
   startRun();
   requestAnimationFrame(frame);
