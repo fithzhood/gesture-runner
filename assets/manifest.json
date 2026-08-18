@@ -1,0 +1,23 @@
+{
+  "_source": "Character sprites by rvros — Animated Pixel Adventurer (https://rvros.itch.io/animated-pixel-hero), plus the bow animation from the same artist's Adventurer-Bow add-on. Personal and commercial use allowed, modification allowed, resale of the asset pack prohibited. Credit appreciated, not required.",
+  "_sheet": "assets/adventurer.png is composited from the pack's individual 50x37 frames, one animation per row, in the order this game asks for them. The original pack is NOT redistributed here.",
+  "_note": "Blank the 'sheet' field to fall back to the rectangle renderer, which stays fully playable. See ASSETS.md.",
+
+  "player": {
+    "sheet": "assets/adventurer.png",
+    "height": 72,
+
+    "_walkSharesTheRunRow": "The pack has no walk cycle, so walking is the run row at a slower cadence — same legs, visibly slower, which is exactly what the speed state means.",
+    "animations": {
+      "idle":  { "row": 0, "frames": 4, "fps": 8,  "frameWidth": 50, "frameHeight": 37 },
+      "walk":  { "row": 1, "frames": 6, "fps": 9,  "frameWidth": 50, "frameHeight": 37 },
+      "run":   { "row": 1, "frames": 6, "fps": 15, "frameWidth": 50, "frameHeight": 37 },
+      "jump":  { "row": 2, "frames": 4, "fps": 11, "frameWidth": 50, "frameHeight": 37, "loop": false },
+      "fall":  { "row": 3, "frames": 2, "fps": 8,  "frameWidth": 50, "frameHeight": 37 },
+      "slide": { "row": 4, "frames": 2, "fps": 8,  "frameWidth": 50, "frameHeight": 37 },
+      "slash": { "row": 5, "frames": 5, "fps": 18, "frameWidth": 50, "frameHeight": 37, "loop": false },
+      "shoot": { "row": 6, "frames": 9, "fps": 32, "frameWidth": 50, "frameHeight": 37, "loop": false },
+      "death": { "row": 7, "frames": 7, "fps": 9,  "frameWidth": 50, "frameHeight": 37, "loop": false }
+    }
+  }
+}

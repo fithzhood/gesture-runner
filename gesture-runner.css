@@ -1,0 +1,131 @@
+/* Gesture Runner — dark, flat, high contrast. System fonts only. */
+
+:root {
+  --bg: #0e1015;
+  --ink: #e8eaf0;
+  --dim: #6b7280;
+  --hud-bg: rgba(8, 10, 14, 0.88);
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+#game {
+  display: block;
+  position: fixed;
+  inset: 0;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+/* ---------- rotate-device overlay (landscape only game) ---------- */
+
+#rotate {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  background: var(--bg);
+}
+#rotate[hidden] { display: none; }
+#rotate p {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.rotate-phone {
+  width: 54px;
+  height: 92px;
+  border: 3px solid var(--ink);
+  border-radius: 10px;
+  animation: tip 2.2s ease-in-out infinite;
+}
+@keyframes tip {
+  0%, 30%   { transform: rotate(0deg); }
+  55%, 100% { transform: rotate(-90deg); }
+}
+
+/* ---------- debug HUD ---------- */
+
+#dbgBtn {
+  position: fixed;
+  right: max(6px, env(safe-area-inset-right));
+  top: max(6px, env(safe-area-inset-top));
+  z-index: 20;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #2a2f3a;
+  border-radius: 50%;
+  background: rgba(20, 24, 32, 0.5);
+  color: transparent;
+  touch-action: none;
+  cursor: pointer;
+}
+#dbgBtn::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: #3a4150;
+}
+#dbgBtn.on::after { background: #3ddc84; }
+
+#dbg {
+  position: fixed;
+  right: max(6px, env(safe-area-inset-right));
+  top: calc(max(6px, env(safe-area-inset-top)) + 32px);
+  z-index: 20;
+  width: min(310px, 62vw);
+  max-height: 78vh;
+  overflow: hidden;
+  padding: 8px 10px;
+  border: 1px solid #232833;
+  border-radius: 8px;
+  background: var(--hud-bg);
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #aab2c0;
+  pointer-events: none;
+}
+#dbg[hidden] { display: none; }
+
+#dbgStats { color: #7f8899; white-space: pre; }
+#dbgStats b { color: var(--ink); font-weight: 600; }
+#dbgStats .warn { color: #ffd23f; }
+
+#dbgLog {
+  margin: 6px 0 0;
+  padding: 6px 0 0;
+  list-style: none;
+  border-top: 1px solid #232833;
+}
+#dbgLog li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#dbgLog li:first-child { color: var(--ink); }
+#dbgLog .act { color: #3ddc84; }
+#dbgLog .unk { color: #ff6b6b; }
+#dbgLog .lat { color: #5a6274; }
