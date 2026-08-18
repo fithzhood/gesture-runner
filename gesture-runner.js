@@ -92,11 +92,11 @@ const SKY_KEYS = [
   //  t     sky top      horizon        ground        hills far    hills near   stars
   { t: 0.00, top: '#111730', hor: '#1e2b4c', gnd: '#171c28', far: '#141d33', near: '#0d1220', stars: 1.00 },
   { t: 0.14, top: '#161c38', hor: '#372c50', gnd: '#1b1f2b', far: '#231f3c', near: '#12162a', stars: 0.55 },
-  { t: 0.24, top: '#2e3a63', hor: '#a06a5e', gnd: '#2b2f3c', far: '#4a3c55', near: '#232838', stars: 0.10 },
-  { t: 0.38, top: '#3f639e', hor: '#93b0c9', gnd: '#39404f', far: '#5b7699', near: '#333c4e', stars: 0.00 },
-  { t: 0.52, top: '#4c79ba', hor: '#b3cbdd', gnd: '#414a5b', far: '#6c8cae', near: '#3b4658', stars: 0.00 },
-  { t: 0.68, top: '#3f5f96', hor: '#c08a63', gnd: '#39404f', far: '#5c5470', near: '#333c4e', stars: 0.00 },
-  { t: 0.79, top: '#2a3157', hor: '#9c5a55', gnd: '#2a2e3c', far: '#42364f', near: '#22273a', stars: 0.25 },
+  { t: 0.24, top: '#3d4d7d', hor: '#c08672', gnd: '#2f342f', far: '#5c5546', near: '#333c2c', stars: 0.10 },
+  { t: 0.38, top: '#5182c4', hor: '#bcd6e8', gnd: '#3c4536', far: '#7d9c74', near: '#42593d', stars: 0.00 },
+  { t: 0.52, top: '#5e97dc', hor: '#d2e6f4', gnd: '#45503c', far: '#8bb07e', near: '#4d6845', stars: 0.00 },
+  { t: 0.68, top: '#5480bd', hor: '#dda878', gnd: '#3e4638', far: '#849069', near: '#455239', stars: 0.00 },
+  { t: 0.79, top: '#33396a', hor: '#b2665d', gnd: '#2c3030', far: '#4e4646', near: '#2a3130', stars: 0.25 },
   { t: 0.88, top: '#141a33', hor: '#372e51', gnd: '#1a1e29', far: '#1e2439', near: '#101524', stars: 0.75 },
   { t: 1.00, top: '#111730', hor: '#1e2b4c', gnd: '#171c28', far: '#141d33', near: '#0d1220', stars: 1.00 }
 ];
@@ -1477,10 +1477,27 @@ function drawCelestialBody(sky) {
   const phase = day ? (t - 0.20) / 0.62 : ((t + 0.18) % 1) / 0.38;
   const x = state.camera.x + v.worldW * (0.12 + phase * 0.78);
   const y = GROUND_Y - 40 - Math.sin(phase * Math.PI) * (GROUND_Y - 120);
-  const r = day ? 17 : 13;
-  const core = day ? '#ffd9a3' : '#dfe6f5';
+  const r = day ? 19 : 13;
 
-  // a real falloff: a flat disc at low alpha reads as a grey ring, not a glow
+  if (day) {
+    // warm light thrown a long way out, then a disc with a white-hot middle
+    const glow = ctx.createRadialGradient(x, y, r * 0.7, x, y, r * 4.6);
+    glow.addColorStop(0, 'rgba(255,236,170,0.55)');
+    glow.addColorStop(0.35, 'rgba(255,214,120,0.22)');
+    glow.addColorStop(1, 'rgba(255,196,90,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(x, y, r * 4.6, 0, Math.PI * 2); ctx.fill();
+
+    const disc = ctx.createRadialGradient(x - r * 0.15, y - r * 0.15, 0, x, y, r);
+    disc.addColorStop(0, '#ffffff');
+    disc.addColorStop(0.45, '#fff6cf');
+    disc.addColorStop(1, '#ffcf6b');
+    ctx.fillStyle = disc;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    return;
+  }
+
+  const core = '#dfe6f5';
   const halo = ctx.createRadialGradient(x, y, r * 0.8, x, y, r * 3.2);
   halo.addColorStop(0, core);
   halo.addColorStop(1, 'rgba(255,255,255,0)');
@@ -1490,11 +1507,9 @@ function drawCelestialBody(sky) {
   ctx.globalAlpha = 1;
   ctx.fillStyle = core;
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
-  if (!day) {
-    // bite a crescent out of the moon with the sky behind it
-    ctx.fillStyle = sky.top;
-    ctx.beginPath(); ctx.arc(x + r * 0.42, y - r * 0.3, r * 0.92, 0, Math.PI * 2); ctx.fill();
-  }
+  // bite a crescent out of the moon with the sky behind it
+  ctx.fillStyle = sky.top;
+  ctx.beginPath(); ctx.arc(x + r * 0.42, y - r * 0.3, r * 0.92, 0, Math.PI * 2); ctx.fill();
 }
 
 
