@@ -36,6 +36,16 @@ const MASH_MS = 400;
 const MASH_TAPS = 3;
 const ANTICIPATION_MS = 70;
 const MIN_TOUCH_PX = 44;      // a fingertip is bigger than any sprite
+const PLAYER_TOUCH_PX = 68;   // the left thumb's home base: nothing competes
+                              // with it there, so it can afford to be huge
+const FOE_TOUCH_PX = 62;      // an enemy closes at 330 units/s, which is a
+                              // 44px box passing under the thumb in ~130ms
+const FLICK_PX_PLAYER = 17;   // a slide is a short stab of the thumb
+const AXIS_BIAS = 1.7;        // horizontal has to win clearly: jump and slide
+                              // are the gestures that save your life, and a
+                              // thumb flicking down always drifts sideways
+const SLASH_BUFFER = 0.24;    // a swipe thrown a moment early waits for the
+                              // enemy to arrive instead of being thrown away
 
 // movement — the same orb is worth more the faster you are going, so speed is greed
 const SPEED = { still: 0, walking: 150, running: 330 };
@@ -45,7 +55,7 @@ const ACCEL_RATE = 450;   // one speed step takes ~0.4 s, so it is felt
 const DECEL_RATE = 900;   // flick left is the panic brake: it bites twice as hard
 const GRAVITY = 1250;
 const JUMP_V = 470;   // 0.75 s of airtime: 113 units of travel walking, 248 running
-const MELEE_RANGE = 84;
+const MELEE_RANGE = 104;
 
 // Orbs are carried, not tapped: you grab one and drag it to the character.
 const ORB_DELIVER_RADIUS = 42;  // how close a carried orb has to get to count
@@ -140,6 +150,7 @@ const state = {
   entities: [],
   pointers: new Map(),   // pointerId -> gesture in progress
   carry: new Map(),      // pointerId -> where that finger is, in world units
+  pendingSlash: null,    // a swipe waiting for its target to come into reach
   actionQueue: [],       // semantic actions awaiting consumption
   camera: { x: 0 },
   particles: [],         // collection sparks; never touched by hit-testing
@@ -252,8 +263,8 @@ function entityBox(e) {
 }
 
 // Every touch box grows to at least MIN_TOUCH_PX square (in CSS px).
-function padBox(box) {
-  const min = MIN_TOUCH_PX / state.view.scale;
+function padBox(box, px) {
+  const min = (px || MIN_TOUCH_PX) / state.view.scale;
   const w = Math.max(box.w, min);
   const h = Math.max(box.h, min);
   return {
@@ -274,7 +285,7 @@ function hitTest(wx, wy) {
   let best = null;
   let bestD = Infinity;
 
-  const pb = padBox(playerBox());
+  const pb = padBox(playerBox(), PLAYER_TOUCH_PX);
   if (boxHit(pb, wx, wy)) {
     const c = boxCenter(pb);
     best = { kind: 'player', ent: null };
@@ -284,7 +295,7 @@ function hitTest(wx, wy) {
   for (let i = 0; i < state.entities.length; i++) {
     const e = state.entities[i];
     if (e.dead || GESTURE_TARGETS.indexOf(e.type) < 0) continue;
-    const b = padBox(entityBox(e));
+    const b = padBox(entityBox(e), isEnemyKind(e.type) ? FOE_TOUCH_PX : MIN_TOUCH_PX);
     if (!boxHit(b, wx, wy)) continue;
     const c = boxCenter(b);
     const d = Math.hypot(c.x - wx, c.y - wy);
@@ -382,9 +393,9 @@ function onPointerMove(e) {
   const age = performance.now() - rec.t0;
   const kind = rec.target ? rec.target.kind : 'world';
 
-  if (!rec.done && dist >= FLICK_PX && age <= FLICK_MS) {
-    if (kind === 'player') { emitFlick(rec, dx, dy); rec.done = true; }
-    else if (isEnemyKind(kind)) { emitSwipe(rec); rec.done = true; }
+  if (!rec.done) {
+    if (kind === 'player' && dist >= FLICK_PX_PLAYER) { emitFlick(rec, dx, dy); rec.done = true; }
+    else if (isEnemyKind(kind) && dist >= FLICK_PX) { emitSwipe(rec); rec.done = true; }
   }
 
   // Drag harvesting: any path that is not a player flick or an enemy swipe
@@ -413,9 +424,10 @@ function onPointerUp(e) {
       // orbs and empty space have no flick action: an unclassified stroke
       // that got this far is a drag by definition
       endDrag(rec, 'drag');
-    } else if (dist >= FLICK_PX && age <= FLICK_MS) {
-      if (kind === 'player') emitFlick(rec, dx, dy);
-      else emitSwipe(rec);
+    } else if (kind === 'player' && dist >= FLICK_PX_PLAYER) {
+      emitFlick(rec, dx, dy);
+    } else if (isEnemyKind(kind) && dist >= FLICK_PX) {
+      emitSwipe(rec);
     } else {
       endDrag(rec, age >= DRAG_MS ? 'drag' : 'slow');
     }
@@ -446,7 +458,7 @@ function isEnemyKind(k) {
 }
 
 function emitFlick(rec, dx, dy) {
-  if (Math.abs(dx) > Math.abs(dy)) {
+  if (Math.abs(dx) > Math.abs(dy) * AXIS_BIAS) {
     if (dx > 0) emit(rec, 'speedUp', 'flick right');
     else emit(rec, 'speedDown', 'flick left');
   } else if (dy < 0) {
@@ -1005,12 +1017,38 @@ function fireBullet(target) {
 }
 
 function swingSword(target) {
-  const p = state.player;
-  // a swipe on something out of reach whiffs, so the range is learned
-  // rather than suspected as a dropped input
   if (!target || target.dead) return;
-  if (!inMeleeRange(target)) { target.flash = 0.12; p.whiff = 0.28; return; }
-  killEntity(target, 2);
+  if (inMeleeRange(target)) { killEntity(target, 2); return; }
+
+  // Swung a moment too early: hold the intent briefly and let it land when
+  // the enemy arrives. A swipe at something genuinely far away still whiffs,
+  // which is what teaches the range — but "I was 100ms early" should not
+  // read as a dropped input.
+  if (target.x > state.player.x) {
+    state.pendingSlash = { ent: target, until: state.run.time + SLASH_BUFFER };
+    target.flash = 0.08;
+    return;
+  }
+  target.flash = 0.12;
+  state.player.whiff = 0.28;
+}
+
+function resolvePendingSlash() {
+  const s = state.pendingSlash;
+  if (!s) return;
+  if (s.ent.dead || !state.run.alive) { state.pendingSlash = null; return; }
+  if (inMeleeRange(s.ent)) {
+    state.pendingSlash = null;
+    state.player.action = 'slash';
+    state.player.actionTimer = 0.28;
+    killEntity(s.ent, 2);
+    return;
+  }
+  if (state.run.time > s.until) {
+    state.pendingSlash = null;
+    s.ent.flash = 0.12;
+    state.player.whiff = 0.28;     // it really was out of reach
+  }
 }
 
 function killEntity(e, orbCount) {
@@ -1357,6 +1395,7 @@ function update(dt) {
   updateEntities(play);
   updateParticles(play);
   updateSpriteAnim(play);
+  resolvePendingSlash();
   resolveHazards();
   updateSpawner();
   teachMash();
@@ -2429,6 +2468,7 @@ function startRun() {
   state.particles.length = 0;
   state.celebration = null;
   state.carry.clear();
+  state.pendingSlash = null;
   state.opening = null;
   state.breatherUntil = 0;
   state.run = { distance: 0, xpThisRun: 0, alive: true, time: 0 };
