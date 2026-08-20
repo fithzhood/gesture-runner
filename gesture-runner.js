@@ -2737,7 +2737,7 @@ function beginClosing() {
   f.stopX = state.player.x + state.view.worldW * 0.72;
   f.restX = f.stopX + 132;
   f.princess = addEntity({
-    type: 'princess', x: f.stopX + 236, y: GROUND_Y - 56, w: 30, h: 56
+    type: 'princess', x: f.stopX + 236, y: GROUND_Y - 62, w: 32, h: 62
   });
 }
 

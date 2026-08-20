@@ -203,11 +203,11 @@
     },
     "princess": {
       "sheet": "assets/princess.png",
-      "frames": 8,
-      "fps": 6,
-      "frameWidth": 32,
-      "frameHeight": 42,
-      "height": 62,
+      "frames": 4,
+      "fps": 3,
+      "frameWidth": 36,
+      "frameHeight": 58,
+      "height": 66,
       "anchor": "bottom"
     },
     "bossRun": {
