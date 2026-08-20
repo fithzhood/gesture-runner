@@ -1993,6 +1993,36 @@ function tintedSprite(spec, colour) {
   return c;
 }
 
+// A genuinely blurred copy of a sheet, built once and cached. Each frame is
+// blurred inside its own padded canvas: blurring the strip in one pass would
+// bleed each frame into its neighbour.
+function blurredSheet(spec) {
+  if (spec.blurred) return spec.blurred;
+  const px = spec.blur;
+  const pad = Math.ceil(px * 3);
+  const out = document.createElement('canvas');
+  out.width = spec.image.width;
+  out.height = spec.image.height;
+  const g = out.getContext('2d');
+
+  const tmp = document.createElement('canvas');
+  tmp.width = spec.frameWidth + pad * 2;
+  tmp.height = spec.frameHeight + pad * 2;
+  const t = tmp.getContext('2d');
+
+  for (let i = 0; i < spec.frames; i++) {
+    t.clearRect(0, 0, tmp.width, tmp.height);
+    t.filter = 'blur(' + px + 'px)';
+    t.drawImage(spec.image, i * spec.frameWidth, 0, spec.frameWidth, spec.frameHeight,
+                pad, pad, spec.frameWidth, spec.frameHeight);
+    t.filter = 'none';
+    g.drawImage(tmp, pad, pad, spec.frameWidth, spec.frameHeight,
+                i * spec.frameWidth, 0, spec.frameWidth, spec.frameHeight);
+  }
+  spec.blurred = out;
+  return out;
+}
+
 // A flat one-colour stamp of a sprite, cached. Drawing it at small offsets
 // under the real sprite gives an outline — which is what stops a dark object
 // from disappearing into a dark sky.
@@ -2033,7 +2063,8 @@ function drawEntitySprite(e, spec) {
     ? Math.floor((state.run.time + (e.id % 7) * 0.31) * spec.fps) % spec.frames
     : 0;
   const sx = frame * spec.frameWidth;
-  const img = (spec.tint ? tintedSprite(spec, orbColour()) : spec.image);
+  const img = spec.tint ? tintedSprite(spec, orbColour())
+            : (spec.blur ? blurredSheet(spec) : spec.image);
 
   // Packs do not agree on which way their creatures face. Anything that
   // should be looking at the oncoming player gets flipped here rather than

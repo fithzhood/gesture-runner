@@ -114,6 +114,18 @@ base did not have.
 > 64x64 resolution, SNES/PS1-era RPG aesthetic, high-quality pixel shading, transparent
 > background, game-ready sprite."*
 
+She is drawn smaller than her source and **blurred on purpose**, set by `blur` in
+her manifest entry (1.4 px, tunable — 1.0 is gentle, 2.2 is a smear). The blur is
+baked once into a cached copy of the sheet, frame by frame inside its own padded
+canvas: blurring the strip in one pass would bleed each frame into the next.
+
+Reducing her pixel grid instead was tried first and abandoned. Halving her to
+18x29 — which would have matched the hero's grain exactly — and gentler steps at
+48, 44 and 39 rows with requantisation all destroy her face: the eyes become
+smudges and she reads as damaged rather than coarse. Her drawing needs those
+pixels. Shrinking a pixel sprite below 1:1 with filtering off is worse still,
+because the canvas drops rows unevenly.
+
 She is the one figure in the game facing the camera rather than in profile. For someone
 standing still waiting to be rescued that reads fine, and it is what a captive would do.
 

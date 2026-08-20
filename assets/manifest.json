@@ -209,7 +209,8 @@
       "frameHeight": 58,
       "height": 54,
       "anchor": "bottom",
-      "smooth": true
+      "smooth": true,
+      "blur": 1.4
     },
     "bossRun": {
       "sheet": "assets/boss-run.png",
