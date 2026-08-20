@@ -109,16 +109,23 @@ const UNLOCKS = [
 ];
 
 const SAVE_KEY = 'gesture-runner:meta';
+// Hearts are health, not lives: taking a hit costs one and the run carries
+// straight on. Only the last one ends it.
 const MAX_LIVES = 3;
+const INVULN_SEC = 1.5;
+const HEART_GAP = 1500;        // no two pickups closer than this
 
 // The road ends. Once every ability is learned and a last stretch is run,
 // the finale: a wizard, a princess behind him, and nowhere left to go.
 const BOSS_XP = 1800;
-const BOSS_HP = 8;
-const BOSS_ARROW_DMG = 1;
-const BOSS_SWORD_DMG = 2;
-const BOSS_ATTACK_GAP = 1.55;
+const BOSS_ARROW_HITS = 6;     // phase one: he runs and you shoot him
+const BOSS_SWORD_HITS = 3;     // phase two: nobody moves and it is the sword
+const BOSS_ATTACK_GAP = 1.5;
 const BOLT_SPEED = 250;
+const BOSS_CHASE_GAP = 300;    // how far ahead he keeps while fleeing
+const BOSS_LUNGE_SPEED = 165;
+const BOSS_STRIKE_RANGE = 62;  // where his staff reaches you
+const BOSS_WINDUP = 0.55;      // your window to get the sword in first
 const SAFE_SECONDS = 2;        // no unlock fires within this much travel of a hazard
 const CELEBRATION_SEC = 2.4;
 const CELEBRATION_SLOW = 0.25;
@@ -178,7 +185,7 @@ const state = {
     speedState: 'still', speed: 0,
     action: 'idle', actionTimer: 0,
     airJumpsLeft: 0, grounded: true, crouch: false, crouchUntilX: 0,
-    anticipate: 0, whiff: 0, bumped: 0, deathTimer: 0, cause: '', lifeTaken: false
+    anticipate: 0, whiff: 0, bumped: 0, deathTimer: 0, cause: '', lifeTaken: false, invuln: 0
   },
   entities: [],
   pointers: new Map(),   // pointerId -> gesture in progress
@@ -293,7 +300,7 @@ function toWorldY(clientY) {
    into state.actionQueue and never touches game logic.
    ===================================================================== */
 
-const GESTURE_TARGETS = ['orb', 'target', 'enemyGun', 'enemySword', 'gate', 'boss'];
+const GESTURE_TARGETS = ['orb', 'heart', 'target', 'enemyGun', 'enemySword', 'gate', 'boss'];
 
 function playerBox() {
   const p = state.player;
@@ -414,7 +421,7 @@ function onPointerDown(e) {
   // so the character reacts on the same frame as the touch.
   if (kind === 'player') startAnticipation();
 
-  if (kind === 'orb') { grabOrb(target.ent, rec); emitCarry(rec); }
+  if (kind === 'orb' || kind === 'heart') { grabOrb(target.ent, rec); emitCarry(rec); }
   if (kind === 'gate') registerMashTap(rec, target.ent);
 }
 
@@ -443,7 +450,7 @@ function onPointerMove(e) {
 
   // Drag harvesting: any path that is not a player flick or an enemy swipe
   // picks up the orbs it crosses and drags them along.
-  if (kind === 'orb' || kind === 'world') {
+  if (kind === 'orb' || kind === 'heart' || kind === 'world') {
     dragPickup(rec);
     if (rec.carrying) emitCarry(rec);
   }
@@ -463,7 +470,7 @@ function onPointerUp(e) {
   if (!rec.done) {
     if (age <= TAP_MS && dist < TAP_PX) {
       handleTap(rec, kind);
-    } else if (kind === 'orb' || kind === 'world') {
+    } else if (kind === 'orb' || kind === 'heart' || kind === 'world') {
       // orbs and empty space have no flick action: an unclassified stroke
       // that got this far is a drag by definition
       endDrag(rec, 'drag');
@@ -520,7 +527,7 @@ function handleTap(rec, kind) {
   if (kind === 'player') { emit(rec, 'jump', 'tap'); return; }
   if (isEnemyKind(kind)) { emit(rec, 'shoot', 'tap'); return; }
   if (kind === 'gate') return;            // already counted on pointerdown
-  if (kind === 'orb') { logGesture(rec, 'tap', 'grabbed then let go', age); return; }
+  if (kind === 'orb' || kind === 'heart') { logGesture(rec, 'tap', 'grabbed then let go', age); return; }
   // a tap on empty background is a no-op, not a misfire
   logGesture(rec, 'tap', 'none', age);
 }
@@ -528,7 +535,7 @@ function handleTap(rec, kind) {
 function endDrag(rec, gesture) {
   const kind = rec.target ? rec.target.kind : 'world';
   const age = performance.now() - rec.t0;
-  if (kind === 'orb' || kind === 'world') {
+  if (kind === 'orb' || kind === 'heart' || kind === 'world') {
     logGesture(rec, gesture, rec.carrying ? 'carry' : 'none', age, rec.carrying ? 'x' + rec.carrying : '');
   } else {
     logGesture(rec, gesture, 'unknown', age);
@@ -564,7 +571,7 @@ function dragPickup(rec) {
   const pad = (MIN_TOUCH_PX / 2) / state.view.scale;
   for (let i = 0; i < state.entities.length; i++) {
     const e = state.entities[i];
-    if (e.type !== 'orb' || e.dead || e.held != null) continue;
+    if (e.dead || !isPickup(e) || e.held != null) continue;
     const cx = e.x + e.w / 2, cy = e.y + e.h / 2;
     const d = segPointDist(rec.pwx, rec.pwy, rec.wx, rec.wy, cx, cy);
     if (d <= e.w / 2 + pad) grabOrb(e, rec);
@@ -573,8 +580,10 @@ function dragPickup(rec) {
 
 // Picking an orb up is not the same as banking it. It sticks to the finger
 // and only counts once it reaches the character.
+function isPickup(e) { return e.type === 'orb' || e.type === 'heart'; }
+
 function grabOrb(orb, rec) {
-  if (orb.dead || orb.held != null) return;
+  if (orb.dead || orb.held != null || !isPickup(orb)) return;
   orb.held = rec.id;
   orb.grabSeq = ++grabCounter;
   rec.carrying++;
@@ -624,6 +633,26 @@ const world = {
   lastLeftX: -9999,     // last event that wants the left thumb
   lastRightX: -9999     // last event that wants the right thumb
 };
+
+// Hearts turn up like coins, and only when a heart is missing. Offering
+// healing to someone at full health is just clutter on the screen.
+function maybeDropHeart(fromX, toX) {
+  if (state.lives >= MAX_LIVES) return;
+  if (state.finale) return;
+  if (fromX - world.lastHeartX < HEART_GAP) return;
+  if (Math.random() > 0.55) return;
+  const x = fromX + (toX - fromX) * (0.3 + Math.random() * 0.4);
+  addEntity({ type: 'heart', x: x, y: 196 - Math.random() * 44, w: 20, h: 18 });
+  world.lastHeartX = fromX;
+}
+
+function takeHeart(h) {
+  if (h.dead) return;
+  h.dead = true;
+  h.held = null;
+  if (state.lives < MAX_LIVES) state.lives++;
+  burst(h.x + h.w / 2, h.y + h.h / 2, '#ff8a95', 10, 120);
+}
 
 function pruneEntities() {
   const left = state.camera.x - 160;
@@ -861,7 +890,9 @@ function updateSpawner() {
   const ahead = state.camera.x + state.view.worldW + 220;
   let guard = 0;
   while (world.nextX < ahead && guard++ < 12) {
-    world.nextX = placeChunk(pickChunk(), world.nextX) + 40;
+    const from = world.nextX;
+    world.nextX = placeChunk(pickChunk(), from) + 40;
+    maybeDropHeart(from, world.nextX);
   }
   pruneEntities();
 }
@@ -1064,7 +1095,7 @@ function applyAction(a) {
       state.carry.delete(a.pointerId);
       for (let i = 0; i < state.entities.length; i++) {
         const e = state.entities[i];
-        if (e.type === 'orb' && e.held === a.pointerId) e.held = null;
+        if (isPickup(e) && e.held === a.pointerId) e.held = null;
       }
       break;
 
@@ -1110,7 +1141,7 @@ function fireBullet(target) {
 function swingSword(target) {
   if (!target || target.dead) return;
   if (target.type === 'boss') {
-    if (inMeleeRange(target)) damageBoss(BOSS_SWORD_DMG);
+    if (inMeleeRange(target)) damageBoss('sword');
     else { target.flash = 0.1; state.player.whiff = 0.28; }
     return;
   }
@@ -1172,7 +1203,7 @@ function updateBolts(dt) {
     b.x += b.vx * dt;
     b.life -= dt;
     if (b.life <= 0 || b.x < left) { b.dead = true; continue; }
-    if (state.run.alive && overlaps(box, b)) { killPlayer('bolt'); b.dead = true; }
+    if (state.run.alive && overlaps(box, b)) { hurtPlayer('bolt'); b.dead = true; }
   }
 }
 
@@ -1208,7 +1239,7 @@ function updateBullets(dt) {
       if (e.dead) continue;
       if (e.type === 'boss') {
         if (!overlaps(b, e)) continue;
-        damageBoss(BOSS_ARROW_DMG);
+        damageBoss('arrow');
         b.dead = true;
         break;
       }
@@ -1252,8 +1283,11 @@ function stopLine() {
 
     if (e.type === 'boss') {
       const f = state.finale;
-      const edge = f ? f.stopX : e.x - 60;
-      if (p.x <= edge + 3 && (line === null || edge < line)) line = edge;
+      // during the chase there is no wall: you are meant to be running
+      if (f && (f.phase === 'closing' || f.phase === 'duel' || f.phase === 'dying')) {
+        const edge = f.stopX;
+        if (p.x <= edge + 3 && (line === null || edge < line)) line = edge;
+      }
     } else if (e.type === 'gate') {
       const edge = e.x - 14;
       if (p.x <= edge + 3 && (line === null || edge < line)) { line = edge; state.blockedBy = e; }
@@ -1283,6 +1317,42 @@ function beamOverhead() {
   return false;
 }
 
+// One hit, one heart, and the run keeps going. Whatever the hit was, the
+// character has to end up somewhere it can carry on from — falling into a
+// pit means being put back on solid ground, not respawned.
+function hurtPlayer(cause) {
+  const p = state.player;
+  if (!state.run.alive || p.invuln > 0) return;
+
+  state.lives--;
+  p.cause = cause;
+  burst(p.x, p.y - 22, '#ff5d6c', 12, 150);
+  shakeScreen(7);
+
+  if (state.lives <= 0) { state.lives = 0; killPlayer(cause); return; }
+
+  p.invuln = INVULN_SEC;
+  if (cause === 'fell') liftOutOfPit();
+  if (p.speedState === 'running') setSpeedState('walking');   // knocked down a gear
+}
+
+function liftOutOfPit() {
+  const p = state.player;
+  let landing = null;
+  for (let i = 0; i < state.entities.length; i++) {
+    const e = state.entities[i];
+    if (e.type !== 'gap' || e.dead) continue;
+    if (p.x >= e.x - 20 && p.x <= e.x + e.w + 20) {
+      landing = e.x + e.w + 16;                 // set down past the far lip
+      break;
+    }
+  }
+  p.x = landing === null ? p.x : landing;
+  p.y = GROUND_Y;
+  p.vy = 0;
+  p.grounded = true;
+}
+
 function killPlayer(cause) {
   if (!state.run.alive) return;
   state.run.alive = false;
@@ -1298,6 +1368,7 @@ function killPlayer(cause) {
 function resolveHazards() {
   const p = state.player;
   if (!state.run.alive) return;
+  if (p.invuln > 0) return;         // flashing: hazards pass straight through
   const box = playerBox();
 
   for (let i = 0; i < state.entities.length; i++) {
@@ -1306,15 +1377,15 @@ function resolveHazards() {
 
     if (e.type === 'obstacle') {
       if (!overlaps(box, e)) continue;
-      if (e.shape === 'spike') { killPlayer('spike'); return; }
-      if (e.shape === 'beam') { killPlayer('beam'); return; }        // must slide
-      if (e.shape === 'block' && p.speedState === 'running') { killPlayer('block'); return; }
+      if (e.shape === 'spike') { hurtPlayer('spike'); return; }
+      if (e.shape === 'beam') { hurtPlayer('beam'); return; }        // must slide
+      if (e.shape === 'block' && p.speedState === 'running') { hurtPlayer('block'); return; }
     } else if (e.type === 'enemyGun' || e.type === 'enemySword') {
-      if (overlaps(box, e)) { killPlayer('enemy'); return; }
+      if (overlaps(box, e)) { hurtPlayer('enemy'); return; }
     }
   }
 
-  if (p.y > REF_H + 60) killPlayer('fell');
+  if (p.y > GROUND_Y + 70) hurtPlayer('fell');
 }
 
 function updatePlayer(dt) {
@@ -1322,6 +1393,7 @@ function updatePlayer(dt) {
 
   if (p.anticipate > 0) p.anticipate = Math.max(0, p.anticipate - dt);
   if (p.whiff > 0) p.whiff = Math.max(0, p.whiff - dt);
+  if (p.invuln > 0) p.invuln = Math.max(0, p.invuln - dt);
   if (p.actionTimer > 0) {
     p.actionTimer -= dt;
     if (p.actionTimer <= 0) p.actionTimer = 0;
@@ -1338,7 +1410,7 @@ function updatePlayer(dt) {
   if (!state.run.alive) {
     p.deathTimer -= dt;
     p.speed = 0;
-    if (p.deathTimer <= 0 && !p.lifeTaken) { p.lifeTaken = true; loseLife(); }
+    if (p.deathTimer <= 0 && !p.lifeTaken) { p.lifeTaken = true; showGameOver(); }
     return;
   }
 
@@ -1433,6 +1505,10 @@ function updateEntities(dt) {
 // the character, which is what makes delivering a run of them feel like
 // something rather than a single event.
 function updateCarriedOrbs(dt) {
+  for (let i = 0; i < state.entities.length; i++) {
+    const e = state.entities[i];
+    if (e.held != null && !state.carry.has(e.held)) e.held = null;
+  }
   if (!state.carry.size) return;
 
   const k = 1 - Math.exp(-dt * ORB_FOLLOW);
@@ -1444,7 +1520,7 @@ function updateCarriedOrbs(dt) {
     const chain = [];
     for (let i = 0; i < state.entities.length; i++) {
       const e = state.entities[i];
-      if (e.type === 'orb' && !e.dead && e.held === id) chain.push(e);
+      if (isPickup(e) && !e.dead && e.held === id) chain.push(e);
     }
     if (!chain.length) return;
     chain.sort(function (a, b) { return a.grabSeq - b.grabSeq; });
@@ -1491,13 +1567,14 @@ function sweepOrbsByContact() {
   const box = playerBox();
   for (let i = 0; i < state.entities.length; i++) {
     const e = state.entities[i];
-    if (e.type !== 'orb' || e.dead || e.held != null) continue;
+    if (e.dead || !isPickup(e) || e.held != null) continue;
     if (overlaps(box, e)) deliverOrb(e);
   }
 }
 
 function deliverOrb(orb) {
   if (orb.dead) return;
+  if (orb.type === 'heart') { takeHeart(orb); return; }
   orb.dead = true;
   orb.held = null;
   orb.value = orbValue();
@@ -1943,7 +2020,8 @@ function spriteKeyFor(e) {
     const f = state.finale;
     if (!f) return 'boss';
     if (f.phase === 'dying') return 'bossDeath';
-    return f.hurt > 0 ? 'bossHurt' : 'boss';
+    if (f.hurt > 0 && f.anim !== 'bossAttack') return 'bossHurt';
+    return f.anim || 'boss';
   }
   if (e.type === 'obstacle') return e.shape;
   if (e.type === 'enemyGun') return (e.id % 2) ? 'enemyGun2' : 'enemyGun';
@@ -2043,7 +2121,10 @@ function render(now) {
   drawBolts();
   drawParticles();
   drawPointerTrails();
+  const inv = state.player.invuln;
+  if (inv > 0) ctx.globalAlpha = (Math.floor(inv * 14) % 2) ? 0.32 : 0.85;
   if (sprites.ready) drawPlayerSprite(); else drawPlayerRect();
+  ctx.globalAlpha = 1;
   drawLives();
   drawBossHealth();
   drawCelebration();
@@ -2233,12 +2314,12 @@ function drawCarryThreads() {
     const chain = [];
     for (let i = 0; i < state.entities.length; i++) {
       const e = state.entities[i];
-      if (e.type === 'orb' && !e.dead && e.held === id) chain.push(e);
+      if (isPickup(e) && !e.dead && e.held === id) chain.push(e);
     }
     if (!chain.length) return;
     chain.sort(function (a, b) { return a.grabSeq - b.grabSeq; });
 
-    ctx.strokeStyle = oc;
+    ctx.strokeStyle = chain[0].type === 'heart' ? '#ff5d6c' : oc;
     ctx.lineWidth = 1.6;
     ctx.globalAlpha = 0.30;
     ctx.beginPath();
@@ -2284,6 +2365,21 @@ function drawEntities() {
     if (shaking) {
       ctx.save();
       ctx.translate((Math.random() - 0.5) * e.shake * 26, 0);
+    }
+
+    if (e.type === 'heart') {
+      const cx = e.x + e.w / 2, cy = e.y + e.h / 2;
+      const pulse = 1 + Math.sin(state.run.time * 4 + e.id) * 0.07;
+      ctx.globalAlpha = e.held != null ? 0.5 : 0.3;
+      ctx.fillStyle = '#ff5d6c';
+      ctx.beginPath(); ctx.arc(cx, cy, 15 * pulse, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#ff5d6c';
+      heartPath(cx, e.y, e.h * pulse);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.65)';
+      ctx.beginPath(); ctx.ellipse(cx - 3, cy - 3, 2.4, 1.6, -0.5, 0, Math.PI * 2); ctx.fill();
+      continue;
     }
 
     const spec = sprites.entities[spriteKeyFor(e)];
@@ -2586,66 +2682,111 @@ function finaleDue() {
 }
 
 function startFinale() {
-  const arenaX = state.player.x + state.view.worldW * 0.9;
-
   for (let i = state.entities.length - 1; i >= 0; i--) {
     const e = state.entities[i];
     if (e.type === 'orb' && e.held != null) continue;
     if (e.x > state.player.x + 60) state.entities.splice(i, 1);
   }
-  world.nextX = arenaX + 4000;                    // no more road past the arena
+  world.nextX = state.camera.x + 60000;          // the road stops producing
 
-  const boss = addEntity({ type: 'boss', x: arenaX + 70, y: GROUND_Y - 96, w: 46, h: 96 });
-  const princess = addEntity({ type: 'princess', x: arenaX + 200, y: GROUND_Y - 46, w: 26, h: 46 });
+  const boss = addEntity({
+    type: 'boss', x: state.player.x + BOSS_CHASE_GAP, y: GROUND_Y - 104, w: 46, h: 104
+  });
 
   state.finale = {
-    phase: 'fight',
-    boss: boss, princess: princess,
-    hp: BOSS_HP, maxHp: BOSS_HP,
-    stopX: arenaX,
-    atk: BOSS_ATTACK_GAP * 1.4,                   // a beat to read the scene
-    kind: 0, hurt: 0, deathT: 0
+    phase: 'chase',
+    boss: boss, princess: null,
+    arrows: 0, swords: 0,
+    atk: 1.1, kind: 0,
+    hurt: 0, deathT: 0, anim: 'bossRun',
+    stopX: 0, duel: null
   };
 }
 
-function damageBoss(n) {
+function bossTotalHits() { return BOSS_ARROW_HITS + BOSS_SWORD_HITS; }
+function bossHitsTaken() { return state.finale.arrows + state.finale.swords; }
+
+// Arrows only bite while he is running. Once he turns and stands his ground
+// it is the sword or nothing — which is the whole point of the second phase.
+function damageBoss(kind) {
   const f = state.finale;
-  if (!f || f.phase !== 'fight') return;
-  f.hp -= n;
-  f.hurt = 0.28;
+  if (!f || f.phase === 'dying' || f.phase === 'won') return;
+
+  if (kind === 'arrow') {
+    if (f.phase !== 'chase') { f.boss.flash = 0.1; return; }
+    f.arrows++;
+  } else {
+    if (f.phase !== 'duel') { f.boss.flash = 0.1; return; }
+    f.swords++;
+    f.duel.mode = 'recoil';
+    f.duel.t = 0;
+  }
+
+  f.hurt = 0.3;
   f.boss.flash = 0.14;
   shakeScreen(3);
-  if (f.hp <= 0) {
-    f.hp = 0;
-    f.phase = 'dying';
-    f.deathT = 0;
-    burst(f.boss.x + f.boss.w / 2, f.boss.y + f.boss.h / 2, '#c9a0ff', 22, 190);
-    shakeScreen(10);
-  }
+
+  if (f.phase === 'chase' && f.arrows >= BOSS_ARROW_HITS) { beginClosing(); return; }
+  if (f.phase === 'duel' && f.swords >= BOSS_SWORD_HITS) { beginBossDeath(); }
+}
+
+// He breaks away, gets to where he is going, and there she is.
+function beginClosing() {
+  const f = state.finale;
+  f.phase = 'closing';
+  f.stopX = state.player.x + state.view.worldW * 0.72;
+  f.restX = f.stopX + 132;
+  f.princess = addEntity({
+    type: 'princess', x: f.stopX + 236, y: GROUND_Y - 46, w: 26, h: 46
+  });
+}
+
+function beginDuel() {
+  const f = state.finale;
+  f.phase = 'duel';
+  f.duel = { mode: 'wait', t: 0.7 };
+  f.boss.x = f.restX;
+}
+
+function beginBossDeath() {
+  const f = state.finale;
+  f.phase = 'dying';
+  f.deathT = 0;
+  burst(f.boss.x + f.boss.w / 2, f.boss.y + f.boss.h / 2, '#c9a0ff', 24, 200);
+  shakeScreen(11);
 }
 
 function updateFinale(dt) {
   const f = state.finale;
   if (!f) return;
-
   if (f.hurt > 0) f.hurt = Math.max(0, f.hurt - dt);
 
-  if (f.phase === 'fight') {
+  if (f.phase === 'chase') {
     if (!state.run.alive) return;
+    // he keeps his distance, so the chase never resolves by running him down
+    f.boss.x = state.player.x + BOSS_CHASE_GAP;
+    f.anim = 'bossRun';
     f.atk -= dt;
     if (f.atk <= 0) {
       f.atk = BOSS_ATTACK_GAP;
-      const low = (f.kind++ % 2) === 0;
-      addEntity({
-        type: 'bolt',
-        x: f.boss.x - 6, y: low ? GROUND_Y - 20 : GROUND_Y - 44,
-        w: 20, h: 12, vx: -BOLT_SPEED, vy: 0, life: 6, low: low
-      });
+      throwBolt(f, (f.kind++ % 2) === 0);
     }
     return;
   }
 
+  if (f.phase === 'closing') {
+    f.anim = 'bossRun';
+    f.boss.x += Math.max(state.player.speed, 200) * 1.35 * dt;
+    if (f.boss.x >= f.restX) f.boss.x = f.restX;
+    // the duel opens once the hero is pinned at the line and the boss is set
+    if (f.boss.x >= f.restX && Math.abs(state.player.x - f.stopX) < 6) beginDuel();
+    return;
+  }
+
+  if (f.phase === 'duel') { updateDuel(dt); return; }
+
   if (f.phase === 'dying') {
+    f.anim = 'bossDeath';
     f.deathT += dt;
     if (f.deathT > 0.95) {
       f.phase = 'won';
@@ -2654,6 +2795,62 @@ function updateFinale(dt) {
       showVictory();
     }
   }
+}
+
+function throwBolt(f, low) {
+  addEntity({
+    type: 'bolt',
+    x: f.boss.x - 6, y: low ? GROUND_Y - 20 : GROUND_Y - 44,
+    w: 20, h: 12, vx: -BOLT_SPEED, vy: 0, life: 6, low: low
+  });
+}
+
+/* Phase two. Nobody moves. He walks in, raises the staff, and the moment he
+   is inside your reach is the moment you have to use it — hit him and he is
+   thrown back, miss and the staff lands. */
+function updateDuel(dt) {
+  const f = state.finale;
+  const d = f.duel;
+  const p = state.player;
+  d.t += dt;
+
+  // the hero is planted for the duel
+  if (p.speedState !== 'still') setSpeedState('still');
+
+  if (d.mode === 'wait') {
+    f.anim = 'boss';
+    if (d.t >= 0.7) { d.mode = 'approach'; d.t = 0; }
+    return;
+  }
+
+  if (d.mode === 'approach') {
+    f.anim = 'bossRun';
+    f.boss.x -= BOSS_LUNGE_SPEED * dt;
+    if (f.boss.x - p.x <= BOSS_STRIKE_RANGE) { d.mode = 'windup'; d.t = 0; }
+    return;
+  }
+
+  if (d.mode === 'windup') {
+    f.anim = 'bossAttack';
+    if (d.t >= BOSS_WINDUP) {
+      d.mode = 'recover';
+      d.t = 0;
+      if (state.run.alive) hurtPlayer('mago');   // you did not get there first
+    }
+    return;
+  }
+
+  if (d.mode === 'recoil') {
+    f.anim = 'bossHurt';
+    f.boss.x += 210 * dt;
+    if (f.boss.x >= f.restX) { f.boss.x = f.restX; d.mode = 'wait'; d.t = 0; }
+    return;
+  }
+
+  // recover: he pulls back after a landed blow, then comes again
+  f.anim = 'boss';
+  f.boss.x += 170 * dt;
+  if (f.boss.x >= f.restX) { f.boss.x = f.restX; d.mode = 'wait'; d.t = 0; }
 }
 
 function showVictory() {
@@ -2691,6 +2888,7 @@ function goEndless() {
 function drawBossHealth() {
   const f = state.finale;
   if (!f || f.phase === 'won') return;
+  const left = 1 - bossHitsTaken() / bossTotalHits();
   const v = state.view;
   const w = Math.min(260, v.worldW * 0.5);
   const x = state.camera.x + (v.worldW - w) / 2;
@@ -2701,7 +2899,7 @@ function drawBossHealth() {
   ctx.fillStyle = '#3a2140';
   ctx.fillRect(x, y, w, 8);
   ctx.fillStyle = f.hurt > 0 ? '#ffffff' : '#c05cf0';
-  ctx.fillRect(x, y, w * (f.hp / f.maxHp), 8);
+  ctx.fillRect(x, y, w * Math.max(0, left), 8);
   ctx.strokeStyle = '#6b4c80';
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, y + 0.5, w - 1, 7);
@@ -2862,12 +3060,6 @@ function drawSceneHero(g, x, y, anim, k) {
 
 /* ------------------------------ lives -------------------------------- */
 
-function loseLife() {
-  state.lives--;
-  if (state.lives > 0) { startRun(); return; }
-  showGameOver();
-}
-
 function showGameOver() {
   const best = state.meta.totalXP;
   showCard({
@@ -2985,7 +3177,7 @@ function startRun() {
   p.action = 'idle'; p.actionTimer = 0;
   p.grounded = true; p.crouch = false; p.anticipate = 0; p.airJumpsLeft = 0;
   p.whiff = 0; p.bumped = 0; p.deathTimer = 0; p.cause = ''; p.crouchUntilX = 0;
-  p.lifeTaken = false;
+  p.lifeTaken = false; p.invuln = 0;
 
   state.camera.x = p.x - playerScreenX();
   world.nextX = state.camera.x + state.view.worldW + 60;
@@ -2993,6 +3185,7 @@ function startRun() {
   world.restNext = false;
   world.lastLeftX = -9999;
   world.lastRightX = -9999;
+  world.lastHeartX = -9999;
 
   if (freshProfile()) startOpening();
   else updateSpawner();
