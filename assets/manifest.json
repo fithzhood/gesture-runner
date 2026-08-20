@@ -2,7 +2,9 @@
   "_credits": [
     "Adventurer (player) by rvros \u2014 https://rvros.itch.io/animated-pixel-hero \u2014 personal and commercial use allowed, modification allowed, resale of the pack prohibited.",
     "Goblin, Mushroom, Skeleton, Flying Eye by LuizMelo \u2014 https://luizmelo.itch.io/monsters-creatures-fantasy \u2014 CC0.",
-    "Blocks, spikes, beam, gate, orb and arrow drawn for this game, in the palette of the two packs above."
+    "Blocks, spikes, beam, gate, orb and arrow drawn for this game, in the palette of the two packs above.",
+    "Evil Wizard 2 (the boss) by LuizMelo \u2014 https://luizmelo.itch.io/evil-wizard-2 \u2014 CC0.",
+    "The princess was drawn for this game, in the same palette."
   ],
   "_note": "Blank a 'sheet' field to send that thing back to the rectangle renderer, which stays fully playable. See ASSETS.md.",
   "player": {
@@ -79,7 +81,7 @@
       }
     }
   },
-  "_anchors": "box = stretched to the entity rect (obstacles are authored at their exact size). bottom = bottom-centred on the entity, scaled to 'height'. center = centred on the entity, scaled to 'height'.",
+  "_anchors": "box = stretched to the entity rect (obstacles are authored at their exact size). bottom = bottom-centred on the entity, scaled to 'height'. center = centred on the entity, scaled to 'height'. flipX mirrors the sprite, for packs whose creatures face the other way.",
   "entities": {
     "enemyGun": {
       "sheet": "assets/goblin.png",
@@ -106,7 +108,8 @@
       "frameWidth": 45,
       "frameHeight": 51,
       "height": 68,
-      "anchor": "bottom"
+      "anchor": "bottom",
+      "flipX": true
     },
     "target": {
       "sheet": "assets/flyingeye.png",
@@ -167,6 +170,45 @@
       "frameWidth": 20,
       "frameHeight": 60,
       "anchor": "box"
+    },
+    "boss": {
+      "sheet": "assets/boss-idle.png",
+      "frames": 8,
+      "fps": 7,
+      "frameWidth": 57,
+      "frameHeight": 104,
+      "height": 120,
+      "anchor": "bottom",
+      "flipX": true
+    },
+    "bossHurt": {
+      "sheet": "assets/boss-hurt.png",
+      "frames": 3,
+      "fps": 10,
+      "frameWidth": 45,
+      "frameHeight": 87,
+      "height": 100,
+      "anchor": "bottom",
+      "flipX": true
+    },
+    "bossDeath": {
+      "sheet": "assets/boss-death.png",
+      "frames": 7,
+      "fps": 8,
+      "frameWidth": 105,
+      "frameHeight": 122,
+      "height": 140,
+      "anchor": "bottom",
+      "flipX": true
+    },
+    "princess": {
+      "sheet": "assets/princess.png",
+      "frames": 4,
+      "fps": 4,
+      "frameWidth": 26,
+      "frameHeight": 36,
+      "height": 52,
+      "anchor": "bottom"
     }
   },
   "ground": {

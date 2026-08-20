@@ -63,8 +63,31 @@ Four creatures, and they happen to map onto the game's three enemy roles exactly
 | `enemySword` | **Skeleton** | carries a shield, which is the whole reason arrows bounce off it |
 | `target` | **Flying Eye** | harmless and airborne, so it sits at the head height the targets already used |
 
+The goblin faces left, towards the oncoming player, and needed nothing. The
+**skeleton faces right** in its sheet — it had its back to you until `flipX`
+was added to the manifest. Worth checking per creature rather than assuming a
+pack is consistent.
+
 They all face **left**, towards the oncoming player, which is what a runner
 needs and is why they did not have to be flipped.
+
+### The boss — LuizMelo, *Evil Wizard 2*
+
+<https://luizmelo.itch.io/evil-wizard-2>
+
+Licence: **CC-0**, quoted from the pack's own `License.txt` — "This pack -
+Evil Wizard 2 Asset Pack is Creative Commons Zero (CC-0). Can be used in
+commercial and non-commercial projects."
+
+Three rows are used: `boss-idle` (8), `boss-hurt` (3) and `boss-death` (7),
+cropped from 250×250 cells to their union bounding box like the other
+creatures. He is flipped, same as the skeleton.
+
+### The princess — drawn for this game
+
+`princess.png`, 26×36, four frames of a slow sway. Drawn rather than sourced
+because a borrowed princess from a fourth pack would have been the one figure
+on screen announcing she came from somewhere else.
 
 ### Objects, obstacles and ground — drawn for this game
 
@@ -100,6 +123,7 @@ Neither character pack requires attribution, but both appreciate it:
 
 > Character sprites by rvros — *Animated Pixel Adventurer*.
 > Monsters by LuizMelo — *Monsters Creatures Fantasy* (CC0).
+> Boss by LuizMelo — *Evil Wizard 2* (CC0).
 
 The original archives and the packs' full `Individual Sprites` folders were
 deleted once the game sheets were built. Only the frames this game plays are in

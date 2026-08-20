@@ -75,6 +75,28 @@ const AIRTIME = 2 * JUMP_V / GRAVITY;
 const WALK_JUMP_REACH = SPEED.walking * AIRTIME;   // what a walking jump can span
 
 // the unlock ladder — thresholds back-solved from a flat time-per-unlock curve
+// Each unlock's card: what it is, how you do it, and which mini-scene plays.
+// `drill` is the chunk forced in front of you the moment you close the card,
+// so the new ability gets used at once instead of minutes later.
+const TUTORIALS = {
+  walk:       { name: 'Cammina',      how: 'Passa il dito <b>verso destra</b> sul personaggio.',
+                scene: 'walk',  drill: null },
+  jump:       { name: 'Salto',        how: "Tocca il personaggio, o passa il dito <b>verso l'alto</b>.",
+                scene: 'jump',  drill: 'hop' },
+  slide:      { name: 'Scivolata',    how: 'Passa il dito <b>verso il basso</b> sul personaggio.',
+                scene: 'slide', drill: 'duck' },
+  gun:        { name: 'Arco',         how: 'Tocca un bersaglio per scoccare una freccia.',
+                scene: 'shoot', drill: 'range' },
+  enemies:    { name: 'Nemici',       how: 'Una freccia basta: toccali prima che ti raggiungano.',
+                scene: 'shoot', drill: 'patrol' },
+  sword:      { name: 'Spada',        how: 'Lo scudo ferma le frecce. Passa il dito <b>sul nemico</b> quando è vicino.',
+                scene: 'slash', drill: 'brute' },
+  run:        { name: 'Corsa',        how: 'Un altro dito verso destra. Le orbe valgono di più, e i burroni larghi si superano solo così.',
+                scene: 'run',   drill: 'chasm' },
+  doubleJump: { name: 'Doppio salto', how: 'Tocca di nuovo <b>mentre sei in aria</b>.',
+                scene: 'jump',  drill: 'gauntlet' }
+};
+
 const UNLOCKS = [
   { id: 'walk',       xp: 3,    demo: 'flickRight' },
   { id: 'jump',       xp: 40,   demo: 'flickUp' },
@@ -87,11 +109,22 @@ const UNLOCKS = [
 ];
 
 const SAVE_KEY = 'gesture-runner:meta';
+const MAX_LIVES = 3;
+
+// The road ends. Once every ability is learned and a last stretch is run,
+// the finale: a wizard, a princess behind him, and nowhere left to go.
+const BOSS_XP = 1800;
+const BOSS_HP = 8;
+const BOSS_ARROW_DMG = 1;
+const BOSS_SWORD_DMG = 2;
+const BOSS_ATTACK_GAP = 1.55;
+const BOLT_SPEED = 250;
 const SAFE_SECONDS = 2;        // no unlock fires within this much travel of a hazard
 const CELEBRATION_SEC = 2.4;
 const CELEBRATION_SLOW = 0.25;
 const NUDGE_AFTER = 10;        // seconds of stillness before the opening offers a fourth orb
 const HAZARD_TYPES = ['obstacle', 'gate', 'enemyGun', 'enemySword', 'gap'];
+const BOSS_TYPES = ['boss'];
 const BREATHER_SEC = 30;       // after the run unlock, density drops for a while
 
 // A full day takes four minutes and never resets on death, so the light is
@@ -145,12 +178,18 @@ const state = {
     speedState: 'still', speed: 0,
     action: 'idle', actionTimer: 0,
     airJumpsLeft: 0, grounded: true, crouch: false, crouchUntilX: 0,
-    anticipate: 0, whiff: 0, bumped: 0, deathTimer: 0, cause: ''
+    anticipate: 0, whiff: 0, bumped: 0, deathTimer: 0, cause: '', lifeTaken: false
   },
   entities: [],
   pointers: new Map(),   // pointerId -> gesture in progress
   carry: new Map(),      // pointerId -> where that finger is, in world units
   pendingSlash: null,    // a swipe waiting for its target to come into reach
+  pendingDrill: null,    // the chunk to put in front of you after an unlock
+  finale: null,          // the boss fight, once the road runs out
+  endless: false,        // 'addio principessa, la mia vita è la corsa'
+  lives: MAX_LIVES,
+  paused: false,         // an overlay card is up; the world holds still
+  tutorialsOff: false,   // 'stop showing me these' — for this run only
   actionQueue: [],       // semantic actions awaiting consumption
   camera: { x: 0 },
   particles: [],         // collection sparks; never touched by hit-testing
@@ -179,6 +218,10 @@ let grabCounter = 0;
    ------------------------------------------------------------------- */
 
 function resetProgression() {
+  state.lives = MAX_LIVES;
+  state.endless = false;
+  state.finale = null;
+  state.tutorialsOff = false;
   state.meta.totalXP = 0;
   state.meta.unlocked = ['drag'];
   state.meta.taught = [];
@@ -250,7 +293,7 @@ function toWorldY(clientY) {
    into state.actionQueue and never touches game logic.
    ===================================================================== */
 
-const GESTURE_TARGETS = ['orb', 'target', 'enemyGun', 'enemySword', 'gate'];
+const GESTURE_TARGETS = ['orb', 'target', 'enemyGun', 'enemySword', 'gate', 'boss'];
 
 function playerBox() {
   const p = state.player;
@@ -454,7 +497,7 @@ function releasePointer(id) {
 }
 
 function isEnemyKind(k) {
-  return k === 'enemyGun' || k === 'enemySword' || k === 'target';
+  return k === 'enemyGun' || k === 'enemySword' || k === 'target' || k === 'boss';
 }
 
 function emitFlick(rec, dx, dy) {
@@ -765,6 +808,32 @@ function chunkPool(tier) {
   return pool;
 }
 
+function chunkById(id) {
+  for (let i = 0; i < CHUNKS.length; i++) if (CHUNKS[i].id === id) return CHUNKS[i];
+  return null;
+}
+
+// A new ability is worthless if the first chance to use it is two minutes
+// away. The moment the card closes, the matching chunk is laid just off the
+// right edge and everything queued behind it is swept away.
+function placeDrill() {
+  const id = state.pendingDrill;
+  state.pendingDrill = null;
+  const chunk = chunkById(id);
+  if (!chunk) return;
+
+  const edge = state.camera.x + state.view.worldW;
+  for (let i = state.entities.length - 1; i >= 0; i--) {
+    const e = state.entities[i];
+    if (e.type === 'orb' || e.held != null) continue;
+    if (e.x > edge - 40) state.entities.splice(i, 1);   // clear the queue ahead
+  }
+
+  world.nextX = placeChunk(chunk, edge + 90) + 40;
+  world.lastChunk = chunk.id;
+  world.restNext = true;              // one breath after the drill
+}
+
 function pickChunk() {
   const tier = currentTier();
 
@@ -787,6 +856,7 @@ function pickChunk() {
 
 function updateSpawner() {
   if (state.opening || state.celebration || !state.run.alive) { pruneEntities(); return; }
+  if (state.finale) { pruneEntities(); return; }
 
   const ahead = state.camera.x + state.view.worldW + 220;
   let guard = 0;
@@ -850,6 +920,27 @@ function grantUnlock(unlock) {
     t: 0,
     dur: CELEBRATION_SEC
   };
+
+  const tut = TUTORIALS[unlock.id];
+  if (tut) {
+    state.pendingDrill = tut.drill;
+    if (state.tutorialsOff) placeDrill();          // no card, straight to the drill
+    else showTutorial(unlock.id, tut);
+  }
+}
+
+function showTutorial(id, tut) {
+  showCard({
+    title: tut.name,
+    body: tut.how,
+    demo: makeSceneDemo(tut.scene),
+    buttons: [
+      { label: 'Provala', kind: 'primary' },
+      { label: 'Non mostrarmeli più', kind: 'quiet', onClick: function () {
+        state.tutorialsOff = true;
+      }}
+    ]
+  });
 }
 
 function spawnDemoEntity(type) {
@@ -1018,6 +1109,11 @@ function fireBullet(target) {
 
 function swingSword(target) {
   if (!target || target.dead) return;
+  if (target.type === 'boss') {
+    if (inMeleeRange(target)) damageBoss(BOSS_SWORD_DMG);
+    else { target.flash = 0.1; state.player.whiff = 0.28; }
+    return;
+  }
   if (inMeleeRange(target)) { killEntity(target, 2); return; }
 
   // Swung a moment too early: hold the intent briefly and let it land when
@@ -1067,6 +1163,35 @@ function dropOrbs(e, n) {
   }
 }
 
+function updateBolts(dt) {
+  const left = state.camera.x - 80;
+  const box = playerBox();
+  for (let i = 0; i < state.entities.length; i++) {
+    const b = state.entities[i];
+    if (b.type !== 'bolt' || b.dead) continue;
+    b.x += b.vx * dt;
+    b.life -= dt;
+    if (b.life <= 0 || b.x < left) { b.dead = true; continue; }
+    if (state.run.alive && overlaps(box, b)) { killPlayer('bolt'); b.dead = true; }
+  }
+}
+
+function drawBolts() {
+  for (let i = 0; i < state.entities.length; i++) {
+    const b = state.entities[i];
+    if (b.type !== 'bolt' || b.dead) continue;
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    const g = ctx.createRadialGradient(cx, cy, 1, cx, cy, b.w);
+    g.addColorStop(0, '#f2d8ff');
+    g.addColorStop(0.5, 'rgba(192,92,240,0.85)');
+    g.addColorStop(1, 'rgba(192,92,240,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.ellipse(cx, cy, b.w, b.h * 0.72, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.ellipse(cx, cy, b.w * 0.3, b.h * 0.28, 0, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
 function updateBullets(dt) {
   const left = state.camera.x - 60;
   const right = state.camera.x + state.view.worldW + 60;
@@ -1081,6 +1206,12 @@ function updateBullets(dt) {
     for (let j = 0; j < state.entities.length; j++) {
       const e = state.entities[j];
       if (e.dead) continue;
+      if (e.type === 'boss') {
+        if (!overlaps(b, e)) continue;
+        damageBoss(BOSS_ARROW_DMG);
+        b.dead = true;
+        break;
+      }
       if (e.type !== 'target' && e.type !== 'enemyGun' && e.type !== 'enemySword') continue;
       if (!overlaps(b, e)) continue;
       if (e.type === 'enemySword') { e.flash = 0.16; b.dead = true; break; }  // immune to bullets
@@ -1119,7 +1250,11 @@ function stopLine() {
     const e = state.entities[i];
     if (e.dead) continue;
 
-    if (e.type === 'gate') {
+    if (e.type === 'boss') {
+      const f = state.finale;
+      const edge = f ? f.stopX : e.x - 60;
+      if (p.x <= edge + 3 && (line === null || edge < line)) line = edge;
+    } else if (e.type === 'gate') {
       const edge = e.x - 14;
       if (p.x <= edge + 3 && (line === null || edge < line)) { line = edge; state.blockedBy = e; }
     } else if (e.type === 'obstacle' && e.shape === 'block' && p.speedState !== 'running') {
@@ -1154,6 +1289,7 @@ function killPlayer(cause) {
   state.player.action = 'death';
   state.player.speedState = 'still';
   state.player.deathTimer = DEATH_PAUSE;
+  state.player.lifeTaken = false;
   burst(state.player.x, state.player.y - 20, COL.orbRunning, 16, 170);
   shakeScreen(9);
   state.player.cause = cause;
@@ -1202,7 +1338,7 @@ function updatePlayer(dt) {
   if (!state.run.alive) {
     p.deathTimer -= dt;
     p.speed = 0;
-    if (p.deathTimer <= 0) startRun();
+    if (p.deathTimer <= 0 && !p.lifeTaken) { p.lifeTaken = true; loseLife(); }
     return;
   }
 
@@ -1392,6 +1528,9 @@ function update(dt) {
   consumeActions();
   updatePlayer(play);
   updateBullets(play);
+  updateBolts(play);
+  updateFinale(play);
+  if (finaleDue()) startFinale();
   updateEntities(play);
   updateParticles(play);
   updateSpriteAnim(play);
@@ -1800,6 +1939,12 @@ const RIM_OFFSETS = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, -1], [-1, 1
 // Which sprite an entity uses. Obstacles are keyed by shape, and enemyGun
 // alternates between two creatures so a patrol is not two clones.
 function spriteKeyFor(e) {
+  if (e.type === 'boss') {
+    const f = state.finale;
+    if (!f) return 'boss';
+    if (f.phase === 'dying') return 'bossDeath';
+    return f.hurt > 0 ? 'bossHurt' : 'boss';
+  }
   if (e.type === 'obstacle') return e.shape;
   if (e.type === 'enemyGun') return (e.id % 2) ? 'enemyGun2' : 'enemyGun';
   return e.type;
@@ -1812,6 +1957,11 @@ function drawEntitySprite(e, spec) {
   const sx = frame * spec.frameWidth;
   const img = (spec.tint ? tintedSprite(spec, orbColour()) : spec.image);
 
+  // Packs do not agree on which way their creatures face. Anything that
+  // should be looking at the oncoming player gets flipped here rather than
+  // by rewriting the sheet, so swapping a sprite stays a manifest edit.
+  const flip = !!spec.flipX;
+
   let dx, dy, dw, dh;
   if (spec.anchor === 'box') {
     dx = e.x; dy = e.y; dw = e.w; dh = e.h;
@@ -1820,6 +1970,12 @@ function drawEntitySprite(e, spec) {
     dw = spec.frameWidth * (dh / spec.frameHeight);
     dx = e.x + e.w / 2 - dw / 2;
     dy = spec.anchor === 'bottom' ? e.y + e.h - dh : e.y + e.h / 2 - dh / 2;
+  }
+
+  if (flip) {
+    ctx.save();
+    ctx.translate(dx * 2 + dw, 0);
+    ctx.scale(-1, 1);
   }
 
   // The rim comes up as the light goes down. Orbs are exempt: they carry
@@ -1837,6 +1993,7 @@ function drawEntitySprite(e, spec) {
   }
 
   ctx.drawImage(img, sx, 0, spec.frameWidth, spec.frameHeight, dx, dy, dw, dh);
+  if (flip) ctx.restore();
 }
 
 function spriteAnimName() {
@@ -1883,9 +2040,12 @@ function render(now) {
   drawGround(sky);
   drawCarryThreads();
   drawEntities();
+  drawBolts();
   drawParticles();
   drawPointerTrails();
   if (sprites.ready) drawPlayerSprite(); else drawPlayerRect();
+  drawLives();
+  drawBossHealth();
   drawCelebration();
 }
 
@@ -2412,6 +2572,343 @@ function nextThresholdLabel() {
 }
 
 
+/* ------------------------------ the finale ---------------------------
+   The road stops at an arena. The wizard throws two things: something low
+   you jump and something high you duck. Both thumbs, everything learned,
+   all at once — and the princess is standing right behind him.
+   -------------------------------------------------------------------- */
+
+function finaleDue() {
+  if (state.finale || state.endless || state.opening || state.celebration) return false;
+  if (state.meta.totalXP < BOSS_XP) return false;
+  if (nextUnlock()) return false;                 // learn everything first
+  return !hazardWithin(SAFE_SECONDS);
+}
+
+function startFinale() {
+  const arenaX = state.player.x + state.view.worldW * 0.9;
+
+  for (let i = state.entities.length - 1; i >= 0; i--) {
+    const e = state.entities[i];
+    if (e.type === 'orb' && e.held != null) continue;
+    if (e.x > state.player.x + 60) state.entities.splice(i, 1);
+  }
+  world.nextX = arenaX + 4000;                    // no more road past the arena
+
+  const boss = addEntity({ type: 'boss', x: arenaX + 70, y: GROUND_Y - 96, w: 46, h: 96 });
+  const princess = addEntity({ type: 'princess', x: arenaX + 200, y: GROUND_Y - 46, w: 26, h: 46 });
+
+  state.finale = {
+    phase: 'fight',
+    boss: boss, princess: princess,
+    hp: BOSS_HP, maxHp: BOSS_HP,
+    stopX: arenaX,
+    atk: BOSS_ATTACK_GAP * 1.4,                   // a beat to read the scene
+    kind: 0, hurt: 0, deathT: 0
+  };
+}
+
+function damageBoss(n) {
+  const f = state.finale;
+  if (!f || f.phase !== 'fight') return;
+  f.hp -= n;
+  f.hurt = 0.28;
+  f.boss.flash = 0.14;
+  shakeScreen(3);
+  if (f.hp <= 0) {
+    f.hp = 0;
+    f.phase = 'dying';
+    f.deathT = 0;
+    burst(f.boss.x + f.boss.w / 2, f.boss.y + f.boss.h / 2, '#c9a0ff', 22, 190);
+    shakeScreen(10);
+  }
+}
+
+function updateFinale(dt) {
+  const f = state.finale;
+  if (!f) return;
+
+  if (f.hurt > 0) f.hurt = Math.max(0, f.hurt - dt);
+
+  if (f.phase === 'fight') {
+    if (!state.run.alive) return;
+    f.atk -= dt;
+    if (f.atk <= 0) {
+      f.atk = BOSS_ATTACK_GAP;
+      const low = (f.kind++ % 2) === 0;
+      addEntity({
+        type: 'bolt',
+        x: f.boss.x - 6, y: low ? GROUND_Y - 20 : GROUND_Y - 44,
+        w: 20, h: 12, vx: -BOLT_SPEED, vy: 0, life: 6, low: low
+      });
+    }
+    return;
+  }
+
+  if (f.phase === 'dying') {
+    f.deathT += dt;
+    if (f.deathT > 0.95) {
+      f.phase = 'won';
+      f.boss.dead = true;
+      dropOrbs(f.boss, 6);
+      showVictory();
+    }
+  }
+}
+
+function showVictory() {
+  showCard({
+    title: 'Salvata',
+    body: 'Il mago è a terra e la principessa è libera. ' +
+          'Hai chiuso con <b>' + state.meta.totalXP + '</b> di esperienza.',
+    demo: makeSceneDemo('run'),
+    buttons: [
+      { label: 'Torna a casa', kind: 'primary', onClick: function () {
+        resetProgression();
+        startRun();
+      }},
+      { label: 'La mia vita è la corsa', kind: 'quiet', onClick: function () {
+        goEndless();
+      }}
+    ]
+  });
+}
+
+// The princess is left behind on purpose: the road reopens and never ends.
+function goEndless() {
+  state.endless = true;
+  if (state.finale) {
+    if (state.finale.princess) state.finale.princess.dead = true;
+    state.finale = null;
+  }
+  state.entities.length = 0;
+  world.nextX = state.camera.x + state.view.worldW + 60;
+  world.lastChunk = '';
+  world.restNext = false;
+  state.breatherUntil = state.run.time + 3;
+}
+
+function drawBossHealth() {
+  const f = state.finale;
+  if (!f || f.phase === 'won') return;
+  const v = state.view;
+  const w = Math.min(260, v.worldW * 0.5);
+  const x = state.camera.x + (v.worldW - w) / 2;
+  const y = 16;
+
+  ctx.fillStyle = 'rgba(8,10,14,0.72)';
+  ctx.fillRect(x - 2, y - 2, w + 4, 12);
+  ctx.fillStyle = '#3a2140';
+  ctx.fillRect(x, y, w, 8);
+  ctx.fillStyle = f.hurt > 0 ? '#ffffff' : '#c05cf0';
+  ctx.fillRect(x, y, w * (f.hp / f.maxHp), 8);
+  ctx.strokeStyle = '#6b4c80';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, 7);
+}
+
+
+/* --------------------------- overlay cards ---------------------------
+   Tutorials, lives, victory and the endless prompt are all the same card
+   with different contents. Building it once means they behave the same.
+   -------------------------------------------------------------------- */
+
+const overlayEl = document.getElementById('overlay');
+const cardTitleEl = document.getElementById('cardTitle');
+const cardBodyEl = document.getElementById('cardBody');
+const cardButtonsEl = document.getElementById('cardButtons');
+const cardDemoEl = document.getElementById('cardDemo');
+const cardDemoCtx = cardDemoEl.getContext('2d');
+
+let cardDemo = null;      // the little looping scene, if this card has one
+
+function showCard(opts) {
+  cardTitleEl.textContent = opts.title || '';
+  cardBodyEl.innerHTML = opts.body || '';
+  cardButtonsEl.innerHTML = '';
+
+  (opts.buttons || []).forEach(function (b) {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.textContent = b.label;
+    if (b.kind) el.className = b.kind;
+    el.addEventListener('click', function () {
+      hideCard();
+      if (b.onClick) b.onClick();
+    });
+    cardButtonsEl.appendChild(el);
+  });
+
+  cardDemo = opts.demo || null;
+  cardDemoEl.hidden = !cardDemo;
+
+  overlayEl.hidden = false;
+  state.paused = true;
+
+  // any finger still down belongs to the world behind the card, not to it
+  state.pointers.forEach(function (rec, id) { releasePointer(id); });
+  state.carry.clear();
+}
+
+function hideCard() {
+  overlayEl.hidden = true;
+  cardDemo = null;
+  state.paused = false;
+  lastTime = 0;                 // do not integrate the time spent reading
+  acc = 0;
+  if (state.pendingDrill) placeDrill();
+}
+
+function cardIsUp() { return !overlayEl.hidden; }
+
+
+/* ------------------- the little scene inside a card ------------------
+   A short loop of the character actually clearing the thing the new
+   ability is for. Reading "passa il dito verso il basso" teaches less
+   than watching him go under the beam.
+   -------------------------------------------------------------------- */
+
+const SCENE_W = 240, SCENE_H = 96;
+const SCENE_GROUND = 78;
+
+function makeSceneDemo(kind) {
+  return { kind: kind, t: 0, loop: 2.6 };
+}
+
+function drawCardDemo(dt) {
+  if (!cardDemo || !sprites.ready) return;
+  cardDemo.t = (cardDemo.t + dt) % cardDemo.loop;
+
+  const g = cardDemoCtx;
+  const k = cardDemo.t / cardDemo.loop;          // 0..1 through the loop
+  g.clearRect(0, 0, SCENE_W, SCENE_H);
+
+  // a slice of the same world: sky, ground, and the obstacle in question
+  g.fillStyle = '#141b2e';
+  g.fillRect(0, 0, SCENE_W, SCENE_H);
+  g.fillStyle = '#39402f';
+  g.fillRect(0, SCENE_GROUND, SCENE_W, SCENE_H - SCENE_GROUND);
+  g.fillStyle = '#556146';
+  g.fillRect(0, SCENE_GROUND, SCENE_W, 3);
+
+  const x = -30 + k * (SCENE_W + 60);            // he crosses left to right
+  let y = SCENE_GROUND;
+  let anim = 'run';
+
+  if (cardDemo.kind === 'walk') anim = 'walk';
+  else if (cardDemo.kind === 'run') anim = 'run';
+
+  if (cardDemo.kind === 'jump') {
+    drawSceneBlock(g, SCENE_W * 0.52, 16, 14);
+    const j = (x - SCENE_W * 0.30) / 90;         // arc centred on the block
+    if (j > -1 && j < 1) { y -= (1 - j * j) * 40; anim = j < 0 ? 'jump' : 'fall'; }
+  } else if (cardDemo.kind === 'slide') {
+    drawSceneBeam(g, SCENE_W * 0.52, 26);
+    const d = Math.abs(x - SCENE_W * 0.52);
+    if (d < 62) anim = 'slide';
+  } else if (cardDemo.kind === 'shoot') {
+    drawSceneFoe(g, SCENE_W * 0.78, 'enemyGun');
+    if (k > 0.35 && k < 0.62) anim = 'shoot';
+    if (k > 0.45 && k < 0.62) {
+      g.fillStyle = '#c8b28a';
+      const ax = x + 26 + (k - 0.45) * 420;
+      g.fillRect(ax, SCENE_GROUND - 22, 11, 2);
+    }
+  } else if (cardDemo.kind === 'slash') {
+    if (k < 0.62) drawSceneFoe(g, SCENE_W * 0.62, 'enemySword');
+    const d = x - SCENE_W * 0.62;
+    if (d > -46 && d < 6) anim = 'slash';
+  }
+
+  drawSceneHero(g, x, y, anim, k);
+}
+
+function drawSceneBlock(g, cx, w, h) {
+  g.fillStyle = '#4a5262';
+  g.fillRect(cx - w / 2, SCENE_GROUND - h, w, h);
+  g.fillStyle = 'rgba(232,234,240,0.14)';
+  g.fillRect(cx - w / 2, SCENE_GROUND - h, w, 2);
+}
+
+function drawSceneBeam(g, cx, gapH) {
+  g.fillStyle = '#4a5262';
+  g.fillRect(cx - 22, 0, 44, SCENE_GROUND - gapH);
+  g.fillStyle = 'rgba(232,234,240,0.16)';
+  g.fillRect(cx - 22, SCENE_GROUND - gapH - 3, 44, 3);
+}
+
+function drawSceneFoe(g, cx, type) {
+  const spec = sprites.entities[type];
+  if (!spec) { g.fillStyle = '#8a3f5a'; g.fillRect(cx - 8, SCENE_GROUND - 26, 16, 26); return; }
+  const h = 34, w = spec.frameWidth * (h / spec.frameHeight);
+  g.save();
+  if (spec.flipX) { g.translate(cx * 2, 0); g.scale(-1, 1); }
+  g.drawImage(spec.image, 0, 0, spec.frameWidth, spec.frameHeight,
+              cx - w / 2, SCENE_GROUND - h, w, h);
+  g.restore();
+}
+
+function drawSceneHero(g, x, y, anim, k) {
+  const m = sprites.manifest;
+  const a = m.animations[anim] || m.animations.idle;
+  const h = 40, scale = h / a.frameHeight, w = a.frameWidth * scale;
+  const frame = Math.floor(k * cardDemo.loop * (a.fps || 10)) % a.frames;
+  g.drawImage(sprites.image,
+    ((a.col || 0) + frame) * a.frameWidth, (a.row || 0) * a.frameHeight,
+    a.frameWidth, a.frameHeight,
+    x - w / 2, y - h, w, h);
+}
+
+
+/* ------------------------------ lives -------------------------------- */
+
+function loseLife() {
+  state.lives--;
+  if (state.lives > 0) { startRun(); return; }
+  showGameOver();
+}
+
+function showGameOver() {
+  const best = state.meta.totalXP;
+  showCard({
+    title: 'Fine dei giochi',
+    body: 'Hai raccolto <b>' + best + '</b> di esperienza e sbloccato <b>' +
+          (state.meta.unlocked.length - 1) + '</b> abilità su ' + UNLOCKS.length + '.',
+    buttons: [{ label: 'Da capo', kind: 'primary', onClick: function () {
+      resetProgression();
+      state.lives = MAX_LIVES;
+      state.tutorialsOff = false;
+      startRun();
+    }}]
+  });
+}
+
+function drawLives() {
+  // hidden during the wordless opening, which has to stay free of any UI
+  if (state.opening) return;
+  const left = state.camera.x + 10;
+  for (let i = 0; i < MAX_LIVES; i++) {
+    const x = left + i * 15;
+    const filled = i < state.lives;
+    ctx.globalAlpha = filled ? 1 : 0.22;
+    ctx.fillStyle = filled ? '#ff5d6c' : '#8a93a5';
+    heartPath(x, 14, 11);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function heartPath(x, y, s) {
+  ctx.beginPath();
+  ctx.moveTo(x, y + s * 0.28);
+  ctx.bezierCurveTo(x, y, x - s * 0.5, y, x - s * 0.5, y + s * 0.3);
+  ctx.bezierCurveTo(x - s * 0.5, y + s * 0.58, x, y + s * 0.78, x, y + s);
+  ctx.bezierCurveTo(x, y + s * 0.78, x + s * 0.5, y + s * 0.58, x + s * 0.5, y + s * 0.3);
+  ctx.bezierCurveTo(x + s * 0.5, y, x, y, x, y + s * 0.28);
+  ctx.closePath();
+}
+
+
 /* ============================== 9. main loop ========================= */
 
 let acc = 0;
@@ -2439,6 +2936,13 @@ function frame(now) {
       state.debug.respN++;
     }
   });
+
+  if (state.paused) {
+    render(now);
+    drawCardDemo(elapsed);
+    lastTime = now;
+    return;
+  }
 
   acc += elapsed;
   let steps = 0;
@@ -2469,6 +2973,8 @@ function startRun() {
   state.celebration = null;
   state.carry.clear();
   state.pendingSlash = null;
+  state.pendingDrill = null;
+  state.finale = null;
   state.opening = null;
   state.breatherUntil = 0;
   state.run = { distance: 0, xpThisRun: 0, alive: true, time: 0 };
@@ -2479,6 +2985,7 @@ function startRun() {
   p.action = 'idle'; p.actionTimer = 0;
   p.grounded = true; p.crouch = false; p.anticipate = 0; p.airJumpsLeft = 0;
   p.whiff = 0; p.bumped = 0; p.deathTimer = 0; p.cause = ''; p.crouchUntilX = 0;
+  p.lifeTaken = false;
 
   state.camera.x = p.x - playerScreenX();
   world.nextX = state.camera.x + state.view.worldW + 60;
