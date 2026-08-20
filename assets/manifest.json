@@ -210,7 +210,7 @@
       "height": 54,
       "anchor": "bottom",
       "smooth": true,
-      "blur": 1.4
+      "blur": 0.3
     },
     "bossRun": {
       "sheet": "assets/boss-run.png",

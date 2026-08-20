@@ -115,7 +115,7 @@ base did not have.
 > background, game-ready sprite."*
 
 She is drawn smaller than her source and **blurred on purpose**, set by `blur` in
-her manifest entry (1.4 px, tunable — 1.0 is gentle, 2.2 is a smear). The blur is
+her manifest entry (0.3 px, tunable — 0.5 is soft, 0.8 starts eating her eyes, 2 is a smear). The blur is
 baked once into a cached copy of the sheet, frame by frame inside its own padded
 canvas: blurring the strip in one pass would bleed each frame into the next.
 
