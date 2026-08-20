@@ -177,7 +177,7 @@
       "fps": 7,
       "frameWidth": 57,
       "frameHeight": 141,
-      "height": 150,
+      "height": 225,
       "anchor": "bottom",
       "flipX": true
     },
@@ -187,7 +187,7 @@
       "fps": 10,
       "frameWidth": 45,
       "frameHeight": 141,
-      "height": 150,
+      "height": 225,
       "anchor": "bottom",
       "flipX": true
     },
@@ -197,17 +197,17 @@
       "fps": 8,
       "frameWidth": 105,
       "frameHeight": 141,
-      "height": 150,
+      "height": 225,
       "anchor": "bottom",
       "flipX": true
     },
     "princess": {
       "sheet": "assets/princess.png",
-      "frames": 4,
-      "fps": 4,
-      "frameWidth": 26,
-      "frameHeight": 36,
-      "height": 52,
+      "frames": 8,
+      "fps": 6,
+      "frameWidth": 32,
+      "frameHeight": 42,
+      "height": 62,
       "anchor": "bottom"
     },
     "bossRun": {
@@ -216,7 +216,7 @@
       "fps": 12,
       "frameWidth": 70,
       "frameHeight": 141,
-      "height": 150,
+      "height": 225,
       "anchor": "bottom",
       "flipX": true
     },
@@ -226,7 +226,7 @@
       "fps": 12,
       "frameWidth": 162,
       "frameHeight": 141,
-      "height": 150,
+      "height": 225,
       "anchor": "bottom",
       "flipX": true
     }

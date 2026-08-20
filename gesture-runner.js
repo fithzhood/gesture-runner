@@ -2690,7 +2690,7 @@ function startFinale() {
   world.nextX = state.camera.x + 60000;          // the road stops producing
 
   const boss = addEntity({
-    type: 'boss', x: state.player.x + BOSS_CHASE_GAP, y: GROUND_Y - 104, w: 46, h: 104
+    type: 'boss', x: state.player.x + BOSS_CHASE_GAP, y: GROUND_Y - 152, w: 62, h: 152
   });
 
   state.finale = {
@@ -2737,7 +2737,7 @@ function beginClosing() {
   f.stopX = state.player.x + state.view.worldW * 0.72;
   f.restX = f.stopX + 132;
   f.princess = addEntity({
-    type: 'princess', x: f.stopX + 236, y: GROUND_Y - 46, w: 26, h: 46
+    type: 'princess', x: f.stopX + 236, y: GROUND_Y - 56, w: 30, h: 56
   });
 }
 
