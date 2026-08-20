@@ -81,7 +81,7 @@
       }
     }
   },
-  "_anchors": "box = stretched to the entity rect (obstacles are authored at their exact size). bottom = bottom-centred on the entity, scaled to 'height'. center = centred on the entity, scaled to 'height'. flipX mirrors the sprite, for packs whose creatures face the other way.",
+  "_anchors": "box = stretched to the entity rect (obstacles are authored at their exact size). bottom = bottom-centred on the entity, scaled to 'height'. center = centred on the entity, scaled to 'height'. flipX mirrors the sprite, for packs whose creatures face the other way. smooth:true lets one sprite be drawn with the canvas filter on, for a softer read.",
   "entities": {
     "enemyGun": {
       "sheet": "assets/goblin.png",
@@ -207,8 +207,9 @@
       "fps": 3,
       "frameWidth": 36,
       "frameHeight": 58,
-      "height": 66,
-      "anchor": "bottom"
+      "height": 54,
+      "anchor": "bottom",
+      "smooth": true
     },
     "bossRun": {
       "sheet": "assets/boss-run.png",

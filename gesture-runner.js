@@ -2056,6 +2056,12 @@ function drawEntitySprite(e, spec) {
     ctx.scale(-1, 1);
   }
 
+  // One sprite may ask to be drawn soft. Shrinking a pixel sprite below 1:1
+  // drops rows unevenly and looks broken; letting the canvas filter it is
+  // the only way to take the edge off without damaging the artwork.
+  const soft = !!spec.smooth;
+  if (soft) ctx.imageSmoothingEnabled = true;
+
   // The rim comes up as the light goes down. Orbs are exempt: they carry
   // their own glow and a rim would only muddy the colour that matters.
   const night = spec.tint ? 0 : nightAmount();
@@ -2071,6 +2077,7 @@ function drawEntitySprite(e, spec) {
   }
 
   ctx.drawImage(img, sx, 0, spec.frameWidth, spec.frameHeight, dx, dy, dw, dh);
+  if (soft) ctx.imageSmoothingEnabled = false;
   if (flip) ctx.restore();
 }
 
@@ -2737,7 +2744,7 @@ function beginClosing() {
   f.stopX = state.player.x + state.view.worldW * 0.72;
   f.restX = f.stopX + 132;
   f.princess = addEntity({
-    type: 'princess', x: f.stopX + 236, y: GROUND_Y - 62, w: 32, h: 62
+    type: 'princess', x: f.stopX + 236, y: GROUND_Y - 54, w: 28, h: 54
   });
 }
 
