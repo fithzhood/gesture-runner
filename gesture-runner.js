@@ -98,7 +98,7 @@ const TUTORIALS = {
                 scene: 'shoot', drill: 'patrol' },
   sword:      { name: 'Spada',        how: 'Lo scudo ferma le frecce. Passa il dito <b>sul nemico</b> quando è vicino.',
                 scene: 'slash', drill: 'brute' },
-  run:        { name: 'Corsa',        how: 'Un altro dito verso destra. I globi valgono ancora di più, e i burroni larghi si superano solo così.',
+  run:        { name: 'Corsa',        how: 'Un altro dito verso destra. I globi valgono ancora di più, e i burroni larghi si superano solo così. Da adesso però <b>i muri non ti fermano più</b>: se non li sfondi prima di arrivarci ci vai addosso, perdi un cuore e li sfondi comunque.',
                 scene: 'chasm', drill: 'chasm' },
   push:       { name: 'Prova di forza', how: 'Contro un muro, <b>toccalo ripetutamente</b>: tre colpi rapidi lo sfondano. Non si salta e non ci si scivola sotto.',
                 scene: 'wall',  drill: 'gate' },
@@ -1296,6 +1296,15 @@ function overlaps(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
+// Once the run is unlocked the world stops being furniture. A wall used to
+// hold you at arm's length until you had mashed it open, however long that
+// took; from here on you arrive at it at speed, so it costs a heart and the
+// charge takes it down with you. The three taps are still the way through —
+// they just have to land before you get there, and they pay in orbs.
+function wallsAreLethal() {
+  return isUnlocked('run');
+}
+
 function gapAt(x) {
   for (let i = 0; i < state.entities.length; i++) {
     const e = state.entities[i];
@@ -1317,6 +1326,7 @@ function stopLine() {
   for (let i = 0; i < state.entities.length; i++) {
     const e = state.entities[i];
     if (e.dead || e.type !== 'gate') continue;
+    if (wallsAreLethal()) continue;          // you go through it, not up to it
     const edge = e.x - 14;
     if (p.x <= edge + 3 && (line === null || edge < line)) { line = edge; state.blockedBy = e; }
   }
@@ -1402,11 +1412,45 @@ function killPlayer(cause) {
   state.player.cause = cause;
 }
 
+// Running into a wall you failed to open: a heart gone and the wall gone
+// with it. It has to break, or the road would be shut behind a hazard the
+// player has already paid for.
+function crashThroughGate(gate) {
+  gate.dead = true;
+  gate.taps = null;
+  const cx = gate.x + gate.w / 2;
+  // Debris up the whole height of it, in the wall's own timber and iron, or
+  // the thing reads as having been deleted rather than knocked down. One
+  // burst at the point of impact is invisible: the character is standing on it.
+  burst(cx, GROUND_Y - 30, '#5c402a', 10, 230);
+  burst(cx, GROUND_Y - 110, '#848c9a', 8, 250);
+  burst(cx, GROUND_Y - 190, '#5c402a', 8, 240);
+  burst(cx, GROUND_Y - 70, '#c9a878', 6, 300);
+  shakeScreen(10);
+  hurtPlayer('gate');               // a no-op while flashing, by design
+}
+
 function resolveHazards() {
   const p = state.player;
   if (!state.run.alive) return;
-  if (p.invuln > 0) return;         // flashing: hazards pass straight through
   const box = playerBox();
+
+  // Walls are settled before the flashing shortcut below. Nothing holds you
+  // at one any more, so a wall you are standing inside has to come down even
+  // mid-invulnerability — being hit a moment ago spares you the heart, not
+  // the collision.
+  if (wallsAreLethal()) {
+    for (let i = 0; i < state.entities.length; i++) {
+      const e = state.entities[i];
+      if (e.dead || e.type !== 'gate') continue;
+      if (!overlaps(box, e)) continue;
+      crashThroughGate(e);
+      break;
+    }
+    if (!state.run.alive) return;
+  }
+
+  if (p.invuln > 0) return;         // flashing: hazards pass straight through
 
   for (let i = 0; i < state.entities.length; i++) {
     const e = state.entities[i];
@@ -2468,6 +2512,7 @@ function drawEntities() {
       if (e.type === 'enemySword' && !inMeleeRange(e)) ctx.globalAlpha = 0.68;
       drawEntitySprite(e, spec);
       ctx.globalAlpha = 1;
+      drawLethalEdge(e);
       drawEntityFlash(e);
       if (shaking) ctx.restore();
       continue;
@@ -2504,9 +2549,24 @@ function drawEntities() {
     }
 
     drawObstacleShape(e, colour, label);
+    drawLethalEdge(e);
     drawEntityFlash(e);
     if (shaking) ctx.restore();
   }
+}
+
+// A wall that can cost a heart must not look like the wall that only used to
+// stop you. The shape stays exactly the same — it still has to read as a wall
+// — and all that changes is a lit edge on the side you arrive from.
+function drawLethalEdge(e) {
+  if (e.type !== 'gate' || !wallsAreLethal()) return;
+  const pulse = 0.36 + 0.30 * Math.abs(Math.sin(state.run.time * 3.4));
+  ctx.globalAlpha = pulse * 0.30;
+  ctx.fillStyle = '#ff5d6c';
+  ctx.fillRect(e.x - 11, e.y, 8, e.h);        // the soft spill
+  ctx.globalAlpha = pulse;
+  ctx.fillRect(e.x - 3, e.y, 3, e.h);         // the edge itself
+  ctx.globalAlpha = 1;
 }
 
 function drawEntityFlash(e) {
