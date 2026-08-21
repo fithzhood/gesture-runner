@@ -57,6 +57,11 @@ const GRAVITY = 1250;
 const JUMP_V = 470;   // 0.75 s of airtime: 113 units of travel walking, 248 running
 const MELEE_RANGE = 104;
 
+// A jump carries you forward even from a standstill, so an obstacle you are
+// already touching can still be cleared. Below this, jumping on the spot
+// against a block would just put you back where you started.
+const JUMP_LUNGE = 130;
+
 // Orbs are carried, not tapped: you grab one and drag it to the character.
 const ORB_DELIVER_RADIUS = 42;  // how close a carried orb has to get to count
 const ORB_FOLLOW = 20;          // how fast a carried orb chases the finger
@@ -79,7 +84,9 @@ const WALK_JUMP_REACH = SPEED.walking * AIRTIME;   // what a walking jump can sp
 // `drill` is the chunk forced in front of you the moment you close the card,
 // so the new ability gets used at once instead of minutes later.
 const TUTORIALS = {
-  walk:       { name: 'Cammina',      how: 'Passa il dito <b>verso destra</b> sul personaggio.',
+  drag:       { name: 'Raccogliere', how: 'I globi di energia si raccolgono <b>trascinandoli fino al personaggio</b>: appoggia il dito e portali. Un dito solo può portarne diversi. Quelli che il personaggio tocca camminando li prende da sé.',
+                scene: 'drag',  drill: null },
+  walk:       { name: 'Cammina',      how: 'Passa il dito <b>verso destra</b> sul personaggio. Da fermo i globi sono verdi e valgono 1; camminando diventano <b>gialli e valgono 3</b>. Più corri, più rendono.',
                 scene: 'walk',  drill: null },
   jump:       { name: 'Salto',        how: "Tocca il personaggio, o passa il dito <b>verso l'alto</b>.",
                 scene: 'jump',  drill: 'hop' },
@@ -91,21 +98,24 @@ const TUTORIALS = {
                 scene: 'shoot', drill: 'patrol' },
   sword:      { name: 'Spada',        how: 'Lo scudo ferma le frecce. Passa il dito <b>sul nemico</b> quando è vicino.',
                 scene: 'slash', drill: 'brute' },
-  run:        { name: 'Corsa',        how: 'Un altro dito verso destra. Le orbe valgono di più, e i burroni larghi si superano solo così.',
-                scene: 'run',   drill: 'chasm' },
-  doubleJump: { name: 'Doppio salto', how: 'Tocca di nuovo <b>mentre sei in aria</b>.',
-                scene: 'jump',  drill: 'gauntlet' }
+  run:        { name: 'Corsa',        how: 'Un altro dito verso destra. I globi valgono ancora di più, e i burroni larghi si superano solo così.',
+                scene: 'chasm', drill: 'chasm' },
+  push:       { name: 'Prova di forza', how: 'Contro un muro, <b>toccalo ripetutamente</b>: tre colpi rapidi lo sfondano. Non si salta e non ci si scivola sotto.',
+                scene: 'wall',  drill: 'gate' },
+  doubleJump: { name: 'Doppio salto', how: 'Tocca una seconda volta <b>mentre sei in aria</b>. I burroni più larghi si passano solo così.',
+                scene: 'abyss', drill: 'abyss' }
 };
 
 const UNLOCKS = [
   { id: 'walk',       xp: 3,    demo: 'flickRight' },
-  { id: 'jump',       xp: 40,   demo: 'flickUp' },
-  { id: 'slide',      xp: 95,   demo: 'flickDown' },
-  { id: 'gun',        xp: 180,  demo: 'tap',    spawn: 'target' },
-  { id: 'enemies',    xp: 300,  demo: 'tap',    spawn: 'enemyGun' },
-  { id: 'sword',      xp: 480,  demo: 'swipe',  spawn: 'enemySword' },
-  { id: 'run',        xp: 720,  demo: 'flickRight' },
-  { id: 'doubleJump', xp: 1400, demo: 'flickUpAir' }
+  { id: 'jump',       xp: 60,   demo: 'flickUp' },
+  { id: 'slide',      xp: 240,  demo: 'flickDown' },
+  { id: 'push',       xp: 430,  demo: 'mash' },
+  { id: 'gun',        xp: 650,  demo: 'tap',    spawn: 'target' },
+  { id: 'enemies',    xp: 890,  demo: 'tap',    spawn: 'enemyGun' },
+  { id: 'sword',      xp: 1240, demo: 'swipe',  spawn: 'enemySword' },
+  { id: 'run',        xp: 1570, demo: 'flickRight' },
+  { id: 'doubleJump', xp: 2780, demo: 'flickUpAir' }
 ];
 
 const SAVE_KEY = 'gesture-runner:meta';
@@ -115,9 +125,17 @@ const MAX_LIVES = 3;
 const INVULN_SEC = 1.5;
 const HEART_GAP = 1500;        // no two pickups closer than this
 
+// What a monster is worth. Jumping over one costs nothing and gains nothing;
+// these numbers are what make stopping to fight the better choice, with the
+// riskier kill paying more.
+const DROP_TARGET = 4;         // the flying eye: harmless, so the cheapest
+const DROP_GUN = 7;            // goblin or mushroom: one arrow, some risk
+const DROP_SWORD = 12;         // the skeleton: you have to get close
+const HEART_DROP_CHANCE = 0.35;  // only ever when you are actually wounded
+
 // The road ends. Once every ability is learned and a last stretch is run,
 // the finale: a wizard, a princess behind him, and nowhere left to go.
-const BOSS_XP = 1800;
+const BOSS_XP = 4100;
 const BOSS_ARROW_HITS = 6;     // phase one: he runs and you shoot him
 const BOSS_SWORD_HITS = 3;     // phase two: nobody moves and it is the sword
 const BOSS_ATTACK_GAP = 1.5;
@@ -672,9 +690,16 @@ function pruneEntities() {
 function startOpening() {
   const px = state.player.x;
   state.opening = { idle: 0, nudged: false };
-  addOrb(px + 120, 168);
-  addOrb(px + 186, 138);
-  addOrb(px + 252, 176);
+  // The very first thing anyone has to work out. It used to be discoverable
+  // by tapping; now that orbs have to be carried, it is worth one card.
+  if (!state.tutorialsOff) showTutorial('drag', TUTORIALS.drag);
+  // Spaced across whatever width this screen actually has. At fixed offsets
+  // the third orb falls off the right edge on a narrow view, and the opening
+  // is a hard gate: an orb you cannot reach is a run that cannot start.
+  const room = Math.max(150, state.camera.x + state.view.worldW - px - 60);
+  addOrb(px + room * 0.34, 168);
+  addOrb(px + room * 0.60, 138);
+  addOrb(px + room * 0.86, 176);
 }
 
 function updateOpening(dt) {
@@ -714,9 +739,9 @@ const CHUNKS = [
   { id: 'arc', tier: 0, needs: [], len: 500, items: [
     { t: 'orbArc', x: 90, n: 6, y: 204, dx: 38, rise: 60 }
   ]},
-  { id: 'gate', tier: 0, needs: [], minXP: 18, len: 540, items: [
-    { t: 'gate', x: 210 },
-    { t: 'orbArc', x: 260, n: 4, y: 192, dx: 36, rise: 46 }
+  { id: 'gate', tier: 1, needs: ['push'], len: 560, items: [
+    { t: 'gate', x: 220 },
+    { t: 'orbArc', x: 280, n: 4, y: 192, dx: 36, rise: 46 }
   ]},
   { id: 'hop', tier: 1, needs: ['jump'], len: 570, items: [
     { t: 'block', x: 230 },
@@ -749,9 +774,18 @@ const CHUNKS = [
     { t: 'enemySword', x: 270 },
     { t: 'orbLine', x: 400, n: 4, y: 172, dx: 34 }
   ]},
+  { id: 'abyss', tier: 3, needs: ['doubleJump'], len: 820, items: [
+    { t: 'gapHuge', x: 300 },
+    { t: 'orbArc', x: 300, n: 7, y: 176, dx: 34, rise: 74 }
+  ]},
   { id: 'chasm', tier: 3, needs: ['run'], len: 740, items: [
     { t: 'gapWide', x: 270 },
     { t: 'orbArc', x: 280, n: 6, y: 194, dx: 32, rise: 62 }
+  ]},
+  { id: 'tollgate', tier: 2, needs: ['push', 'enemies'], len: 700, items: [
+    { t: 'gate', x: 250 },
+    { t: 'enemyGun', x: 470 },
+    { t: 'orbLine', x: 330, n: 4, y: 164, dx: 34 }
   ]},
   { id: 'gauntlet', tier: 3, needs: ['jump', 'slide'], len: 780, items: [
     { t: 'beam', x: 180 },
@@ -765,7 +799,7 @@ const CHUNKS = [
 // 300 ms apart. 300 ms at top speed is 99 units; 150 also clears a slide.
 const MIN_EVENT_GAP = 150;
 
-const LEFT_THUMB = ['block', 'spike', 'beam', 'gapNarrow', 'gapWide'];
+const LEFT_THUMB = ['block', 'spike', 'beam', 'gapNarrow', 'gapWide', 'gapHuge'];
 const RIGHT_THUMB = ['gate', 'target', 'enemyGun', 'enemySword'];
 
 function thumbOf(t) {
@@ -781,7 +815,11 @@ function buildItem(item, x) {
     case 'beam':  return addEntity({ type: 'obstacle', shape: 'beam', x: x, y: 60, w: 60, h: GROUND_Y - 90 });
     case 'gapNarrow': return addEntity({ type: 'gap', x: x, y: GROUND_Y, w: 76, h: REF_H - GROUND_Y });
     case 'gapWide':   return addEntity({ type: 'gap', x: x, y: GROUND_Y, w: 168, h: REF_H - GROUND_Y });
-    case 'gate':  return addEntity({ type: 'gate', x: x, y: GROUND_Y - 60, w: 20, h: 60 });
+    // 250 sits above a running jump's 207 and below a double jump's 337
+    case 'gapHuge':   return addEntity({ type: 'gap', x: x, y: GROUND_Y, w: 250, h: REF_H - GROUND_Y });
+    // full height on purpose: a 60-unit gate can simply be jumped, which is
+    // what made the strength gesture pointless
+    case 'gate':  return addEntity({ type: 'gate', x: x, y: 0, w: 24, h: GROUND_Y });
     case 'target': return addEntity({ type: 'target', x: x, y: item.y, w: 26, h: 26 });
     case 'enemyGun': return addEntity({ type: 'enemyGun', x: x, y: GROUND_Y - 40, w: 24, h: 40 });
     case 'enemySword': return addEntity({ type: 'enemySword', x: x, y: GROUND_Y - 42, w: 26, h: 42 });
@@ -910,22 +948,6 @@ function hazardWithin(seconds) {
   return false;
 }
 
-// The strength gate is available from the very first second, but nothing in
-// the game ever showed that it breaks under repeated taps — so the first
-// wall a new player meets looks like a wall they lack the ability for.
-// It gets the same demonstration an unlock gets, once per profile.
-function teachMash() {
-  if (state.celebration) return;
-  if (state.meta.taught.indexOf('mash') >= 0) return;
-  // the speed never drops at a gate — the clamp on position is what says
-  // "you are stuck", so that is what this waits for
-  const gate = state.haltedBy;
-  if (!gate || gate.type !== 'gate' || gate.dead) return;
-
-  state.meta.taught.push('mash');
-  state.celebration = { id: 'mash', demo: 'mash', ent: gate, t: 0, dur: CELEBRATION_SEC };
-}
-
 function checkUnlocks() {
   if (state.celebration) return;
   const next = nextUnlock();
@@ -1008,6 +1030,7 @@ function actionGate(a) {
     case 'speedDown': return 'walk';
     case 'shoot': return 'gun';
     case 'slash': return 'sword';
+    case 'mash': return 'push';
     default: return null;
   }
 }
@@ -1071,7 +1094,7 @@ function applyAction(a) {
     case 'mash':
       if (a.target && a.target.type === 'gate') {
         a.target.dead = true;              // pushed through
-        dropOrbs(a.target, 2);
+        dropOrbs(a.target, 5);
       }
       break;
 
@@ -1145,7 +1168,7 @@ function swingSword(target) {
     else { target.flash = 0.1; state.player.whiff = 0.28; }
     return;
   }
-  if (inMeleeRange(target)) { killEntity(target, 2); return; }
+  if (inMeleeRange(target)) { killEntity(target, DROP_SWORD); return; }
 
   // Swung a moment too early: hold the intent briefly and let it land when
   // the enemy arrives. A swipe at something genuinely far away still whiffs,
@@ -1168,7 +1191,7 @@ function resolvePendingSlash() {
     state.pendingSlash = null;
     state.player.action = 'slash';
     state.player.actionTimer = 0.28;
-    killEntity(s.ent, 2);
+    killEntity(s.ent, DROP_SWORD);
     return;
   }
   if (state.run.time > s.until) {
@@ -1184,13 +1207,24 @@ function killEntity(e, orbCount) {
   burst(e.x + e.w / 2, e.y + e.h / 2, '#c9d1e0', 10, 130);
   shakeScreen(2.5);
   dropOrbs(e, orbCount);
+
+  // A monster can also cough up a heart, but only to someone who needs one.
+  // Offering healing at full health is noise.
+  if (state.lives < MAX_LIVES && Math.random() < HEART_DROP_CHANCE) {
+    addEntity({ type: 'heart', x: e.x + e.w / 2 - 10, y: e.y - 6, w: 20, h: 18 });
+  }
 }
 
 function dropOrbs(e, n) {
   const cx = e.x + e.w / 2;
   const cy = e.y + e.h / 2;
+  const perRow = Math.min(n, 6);
   for (let i = 0; i < n; i++) {
-    addOrb(cx + (i - (n - 1) / 2) * 26, cy - 18);
+    const row = Math.floor(i / perRow);
+    const inRow = i % perRow;
+    const count = Math.min(perRow, n - row * perRow);
+    const t = count === 1 ? 0 : (inRow - (count - 1) / 2);
+    addOrb(cx + t * 26, cy - 18 - row * 26 - Math.cos(t * 0.7) * 8);
   }
 }
 
@@ -1246,7 +1280,7 @@ function updateBullets(dt) {
       if (e.type !== 'target' && e.type !== 'enemyGun' && e.type !== 'enemySword') continue;
       if (!overlaps(b, e)) continue;
       if (e.type === 'enemySword') { e.flash = 0.16; b.dead = true; break; }  // immune to bullets
-      killEntity(e, e.type === 'target' ? 2 : 3);
+      killEntity(e, e.type === 'target' ? DROP_TARGET : DROP_GUN);
       b.dead = true;
       break;
     }
@@ -1273,9 +1307,21 @@ function gapAt(x) {
 // The x the player is not allowed to walk past, or null if the road is clear.
 function stopLine() {
   const p = state.player;
-  if (!p.grounded) return null;
   let line = null;
   state.blockedBy = null;
+
+  // A full-height wall stops you in mid-air as well. Everything else only
+  // bumps you while your feet are down, which is what lets a block be hopped
+  // — but a wall you could jump over would make the whole strength power
+  // pointless, which is exactly what it used to do.
+  for (let i = 0; i < state.entities.length; i++) {
+    const e = state.entities[i];
+    if (e.dead || e.type !== 'gate') continue;
+    const edge = e.x - 14;
+    if (p.x <= edge + 3 && (line === null || edge < line)) { line = edge; state.blockedBy = e; }
+  }
+
+  if (!p.grounded) return line;
 
   for (let i = 0; i < state.entities.length; i++) {
     const e = state.entities[i];
@@ -1286,21 +1332,12 @@ function stopLine() {
       // during the chase there is no wall: you are meant to be running
       if (f && (f.phase === 'closing' || f.phase === 'duel' || f.phase === 'dying')) {
         const edge = f.stopX;
-        if (p.x <= edge + 3 && (line === null || edge < line)) line = edge;
+        if (p.x <= edge + 3 && (line === null || edge < line)) { line = edge; state.blockedBy = e; }
       }
-    } else if (e.type === 'gate') {
-      const edge = e.x - 14;
-      if (p.x <= edge + 3 && (line === null || edge < line)) { line = edge; state.blockedBy = e; }
     } else if (e.type === 'obstacle' && e.shape === 'block' && p.speedState !== 'running') {
       // blunt block: bumps and halts while walking, no damage
       const edge = e.x - 14;
-      if (p.x <= edge + 3 && (line === null || edge < line)) line = edge;
-    } else if (e.type === 'gap' && e.w > WALK_JUMP_REACH) {
-      // A gap no walking jump can span: the character refuses to step off.
-      // Pinned at the lip it still revs up, so escalating to running and
-      // then jumping is the way across — and the only way across.
-      const edge = e.x - 4;
-      if (p.x <= edge + 3 && (line === null || edge < line)) line = edge;
+      if (p.x <= edge + 3 && (line === null || edge < line)) { line = edge; state.blockedBy = e; }
     }
   }
   return line;
@@ -1419,7 +1456,10 @@ function updatePlayer(dt) {
   if (p.speed < wanted) p.speed = Math.min(wanted, p.speed + ACCEL_RATE * dt);
   else if (p.speed > wanted) p.speed = Math.max(wanted, p.speed - DECEL_RATE * dt);
 
-  const step = (p.crouch ? Math.max(p.speed, SLIDE_SPEED) : p.speed) * dt;
+  let horiz = p.speed;
+  if (p.crouch) horiz = Math.max(horiz, SLIDE_SPEED);
+  else if (!p.grounded) horiz = Math.max(horiz, JUMP_LUNGE);   // the leap carries
+  const step = horiz * dt;
   const line = stopLine();
   p.x += step;
   if (line !== null && p.x > line) {
@@ -1451,6 +1491,8 @@ function updatePlayer(dt) {
 
   if (p.crouch) {
     p.action = 'slide';
+  } else if (state.haltedBy && p.grounded) {
+    p.action = 'idle';
   } else if (p.actionTimer <= 0) {
     if (!p.grounded) p.action = p.vy < 0 ? 'jump' : 'fall';
     else if (p.speedState === 'running') p.action = 'run';
@@ -1614,7 +1656,6 @@ function update(dt) {
   resolvePendingSlash();
   resolveHazards();
   updateSpawner();
-  teachMash();
   checkUnlocks();
 }
 
@@ -2896,16 +2937,29 @@ function showVictory() {
     title: 'Salvata',
     body: 'Il mago è a terra e la principessa è libera. ' +
           'Hai chiuso con <b>' + state.meta.totalXP + '</b> di esperienza.',
-    demo: makeSceneDemo('run'),
+    demo: makeSceneDemo('reunion'),
     buttons: [
       { label: 'Torna a casa', kind: 'primary', onClick: function () {
         resetProgression();
         startRun();
       }},
       { label: 'La mia vita è la corsa', kind: 'quiet', onClick: function () {
-        goEndless();
+        showFarewell();
       }}
     ]
+  });
+}
+
+// He runs past her and keeps going. The card plays it once, closes itself,
+// and the road is open again.
+function showFarewell() {
+  cardAfter = goEndless;
+  showCard({
+    title: 'Addio principessa',
+    body: 'La mia vita è la corsa.',
+    demo: makeSceneDemo('farewell'),
+    autoClose: 3.1,
+    buttons: []
   });
 }
 
@@ -2957,8 +3011,11 @@ const cardDemoEl = document.getElementById('cardDemo');
 const cardDemoCtx = cardDemoEl.getContext('2d');
 
 let cardDemo = null;      // the little looping scene, if this card has one
+let cardAutoClose = 0;    // seconds before the card closes itself, 0 = never
+let cardAfter = null;     // what to run once it has closed
 
 function showCard(opts) {
+  cardAutoClose = opts.autoClose || 0;
   cardTitleEl.textContent = opts.title || '';
   cardBodyEl.innerHTML = opts.body || '';
   cardButtonsEl.innerHTML = '';
@@ -2989,10 +3046,14 @@ function showCard(opts) {
 function hideCard() {
   overlayEl.hidden = true;
   cardDemo = null;
+  cardAutoClose = 0;
   state.paused = false;
   lastTime = 0;                 // do not integrate the time spent reading
   acc = 0;
   if (state.pendingDrill) placeDrill();
+  const after = cardAfter;
+  cardAfter = null;
+  if (after) after();
 }
 
 function cardIsUp() { return !overlayEl.hidden; }
@@ -3005,6 +3066,7 @@ function cardIsUp() { return !overlayEl.hidden; }
    -------------------------------------------------------------------- */
 
 const SCENE_W = 240, SCENE_H = 96;
+const SCENE_HERO_H = 40;   // the hero's height inside a card scene
 const SCENE_GROUND = 78;
 
 function makeSceneDemo(kind) {
@@ -3034,6 +3096,91 @@ function drawCardDemo(dt) {
   if (cardDemo.kind === 'walk') anim = 'walk';
   else if (cardDemo.kind === 'run') anim = 'run';
 
+  if (cardDemo.kind === 'reunion') {
+    // the two of them, standing still, side by side
+    const hx = SCENE_W * 0.42, px2 = SCENE_W * 0.58;
+    drawSceneEntity(g, 'princess', px2, false);
+    drawSceneHero(g, hx, SCENE_GROUND, 'idle', k);
+    const beat = 0.5 + 0.5 * Math.sin(cardDemo.t * 3.2);
+    g.globalAlpha = 0.35 + beat * 0.45;
+    g.fillStyle = '#ff5d6c';
+    heartPathOn(g, (hx + px2) / 2, SCENE_GROUND - 62 - beat * 4, 9);
+    g.fill();
+    g.globalAlpha = 1;
+    return;
+  }
+
+  if (cardDemo.kind === 'farewell') {
+    // he does not stop. She is left holding a question.
+    const px2 = SCENE_W * 0.38;
+    drawSceneEntity(g, 'princess', px2, false);
+    const hx = -30 + k * (SCENE_W + 70);
+    drawSceneHero(g, hx, SCENE_GROUND, 'run', k);
+    if (hx > px2 + 14) {
+      const f = Math.min(1, (hx - px2 - 14) / 60);
+      g.globalAlpha = f;
+      g.fillStyle = '#e8eaf0';
+      g.font = 'bold 22px ' + FONT_STACK;
+      g.textAlign = 'center';
+      g.textBaseline = 'alphabetic';
+      g.fillText('?', px2, SCENE_GROUND - 58 - f * 5);
+      g.globalAlpha = 1;
+      g.textAlign = 'left';
+    }
+    return;
+  }
+
+  if (cardDemo.kind === 'drag') {
+    const heroX = SCENE_W * 0.22;
+    const chestY = SCENE_GROUND - 24;
+    const from = SCENE_W * 0.82;
+    const held = k > 0.14 && k < 0.80;
+    const u = k <= 0.14 ? 0 : Math.min(1, (k - 0.14) / 0.66);
+    const ox = from + (heroX + 10 - from) * u;
+    const oy = (SCENE_GROUND - 48) + (chestY - (SCENE_GROUND - 48)) * u;
+
+    if (u < 1) {
+      if (held) {                                  // the trail it leaves behind
+        g.strokeStyle = 'rgba(61,220,132,0.28)';
+        g.lineWidth = 2;
+        g.setLineDash([3, 5]);
+        g.beginPath(); g.moveTo(ox, oy); g.lineTo(from, SCENE_GROUND - 48); g.stroke();
+        g.setLineDash([]);
+      }
+      g.fillStyle = 'rgba(61,220,132,0.30)';
+      g.beginPath(); g.arc(ox, oy, 11, 0, Math.PI*2); g.fill();
+      g.fillStyle = '#3ddc84';
+      g.beginPath(); g.arc(ox, oy, 6, 0, Math.PI*2); g.fill();
+      if (held) {                                  // the fingertip, on the orb
+        g.strokeStyle = 'rgba(255,255,255,0.85)';
+        g.lineWidth = 1.6;
+        g.beginPath(); g.arc(ox, oy, 13, 0, Math.PI*2); g.stroke();
+      }
+    } else {
+      const f = Math.min(1, (k - 0.80) / 0.16);    // a small pop, then gone
+      g.globalAlpha = 1 - f;
+      g.strokeStyle = '#3ddc84';
+      g.lineWidth = 2;
+      g.beginPath(); g.arc(heroX + 10, chestY, 5 + f * 12, 0, Math.PI*2); g.stroke();
+      g.globalAlpha = 1;
+    }
+
+    drawSceneHero(g, heroX, SCENE_GROUND, 'idle', k);
+    return;
+  }
+
+  if (cardDemo.kind === 'walk') {
+    // three orbs ahead of him: the reason to start moving at all
+    for (let i = 0; i < 3; i++) {
+      const ox = SCENE_W * 0.55 + i * 22;
+      if (x > ox - 8) continue;                 // they vanish as he reaches them
+      g.fillStyle = 'rgba(61,220,132,0.30)';
+      g.beginPath(); g.arc(ox, SCENE_GROUND - 26, 9, 0, Math.PI*2); g.fill();
+      g.fillStyle = '#3ddc84';
+      g.beginPath(); g.arc(ox, SCENE_GROUND - 26, 5, 0, Math.PI*2); g.fill();
+    }
+  }
+
   if (cardDemo.kind === 'jump') {
     drawSceneBlock(g, SCENE_W * 0.52, 16, 14);
     const j = (x - SCENE_W * 0.30) / 90;         // arc centred on the block
@@ -3049,6 +3196,53 @@ function drawCardDemo(dt) {
       g.fillStyle = '#c8b28a';
       const ax = x + 26 + (k - 0.45) * 420;
       g.fillRect(ax, SCENE_GROUND - 22, 11, 2);
+    }
+  } else if (cardDemo.kind === 'wall') {
+    const wx = SCENE_W * 0.60;
+    const broken = k > 0.62;
+    if (!broken) {
+      g.fillStyle = '#5c402a';
+      g.fillRect(wx - 7, 0, 14, SCENE_GROUND);
+      g.fillStyle = 'rgba(232,234,240,0.16)';
+      for (let yy = 6; yy < SCENE_GROUND; yy += 11) g.fillRect(wx - 7, yy, 14, 1);
+      if (k > 0.40) {                              // the three taps landing
+        const n = Math.min(3, Math.floor((k - 0.40) / 0.07) + 1);
+        for (let i = 0; i < n; i++) {
+          g.strokeStyle = 'rgba(255,255,255,0.55)';
+          g.lineWidth = 1.5;
+          g.beginPath();
+          g.arc(wx, SCENE_GROUND - 34, 7 + i * 7, 0, Math.PI * 2);
+          g.stroke();
+        }
+      }
+    } else {
+      g.fillStyle = '#5c402a';                     // splinters
+      for (let i = 0; i < 6; i++) {
+        const t = (k - 0.62) * 90;
+        g.fillRect(wx - 7 + (i % 3) * 6, SCENE_GROUND - 12 - i * 9 - t, 4, 5);
+      }
+    }
+    const d2 = wx - x;
+    if (!broken && d2 < 22 && d2 > -4) anim = 'idle';   // pinned, legs stopped
+  } else if (cardDemo.kind === 'chasm' || cardDemo.kind === 'abyss') {
+    const huge = cardDemo.kind === 'abyss';
+    const gw = huge ? 92 : 58;
+    const gx = SCENE_W * 0.50 - gw / 2;
+    g.fillStyle = '#05070c';
+    g.fillRect(gx, SCENE_GROUND, gw, SCENE_H - SCENE_GROUND);
+    g.fillStyle = '#6b7689';
+    g.fillRect(gx - 2, SCENE_GROUND - 2, 2, 4);
+    g.fillRect(gx + gw, SCENE_GROUND - 2, 2, 4);
+
+    const t0 = gx - 26, t1 = gx + gw + 12;
+    if (x > t0 && x < t1) {
+      const u = (x - t0) / (t1 - t0);
+      y -= Math.sin(u * Math.PI) * (huge ? 44 : 34);
+      anim = u < 0.5 ? 'jump' : 'fall';
+      if (huge && u > 0.42 && u < 0.56) {          // the second jump, mid-air
+        g.strokeStyle = 'rgba(255,255,255,0.6)'; g.lineWidth = 2;
+        g.beginPath(); g.arc(x, y - 20, 10, 0, Math.PI*2); g.stroke();
+      }
     }
   } else if (cardDemo.kind === 'slash') {
     if (k < 0.62) drawSceneFoe(g, SCENE_W * 0.62, 'enemySword');
@@ -3073,6 +3267,30 @@ function drawSceneBeam(g, cx, gapH) {
   g.fillRect(cx - 22, SCENE_GROUND - gapH - 3, 44, 3);
 }
 
+// Scene height that matches how the game actually draws this thing, so the
+// card is not quietly showing different proportions from the arena.
+function sceneHeightOf(key) {
+  const spec = sprites.entities[key];
+  const hero = sprites.manifest ? sprites.manifest.height : 74;
+  if (!spec || !spec.height) return SCENE_HERO_H;
+  return SCENE_HERO_H * (spec.height / hero);
+}
+
+function drawSceneEntity(g, key, cx, flip) {
+  const spec = sprites.entities[key];
+  if (!spec) return;
+  const h = sceneHeightOf(key);
+  const w = spec.frameWidth * (h / spec.frameHeight);
+  const frame = spec.frames > 1 ? Math.floor(cardDemo.t * spec.fps) % spec.frames : 0;
+  const img = spec.blur ? blurredSheet(spec) : spec.image;
+  g.save();
+  if (spec.smooth) g.imageSmoothingEnabled = true;
+  if (flip || spec.flipX) { g.translate(cx * 2, 0); g.scale(-1, 1); }
+  g.drawImage(img, frame * spec.frameWidth, 0, spec.frameWidth, spec.frameHeight,
+              cx - w / 2, SCENE_GROUND - h, w, h);
+  g.restore();
+}
+
 function drawSceneFoe(g, cx, type) {
   const spec = sprites.entities[type];
   if (!spec) { g.fillStyle = '#8a3f5a'; g.fillRect(cx - 8, SCENE_GROUND - 26, 16, 26); return; }
@@ -3087,7 +3305,7 @@ function drawSceneFoe(g, cx, type) {
 function drawSceneHero(g, x, y, anim, k) {
   const m = sprites.manifest;
   const a = m.animations[anim] || m.animations.idle;
-  const h = 40, scale = h / a.frameHeight, w = a.frameWidth * scale;
+  const h = SCENE_HERO_H, scale = h / a.frameHeight, w = a.frameWidth * scale;
   const frame = Math.floor(k * cardDemo.loop * (a.fps || 10)) % a.frames;
   g.drawImage(sprites.image,
     ((a.col || 0) + frame) * a.frameWidth, (a.row || 0) * a.frameHeight,
@@ -3101,7 +3319,7 @@ function drawSceneHero(g, x, y, anim, k) {
 function showGameOver() {
   const best = state.meta.totalXP;
   showCard({
-    title: 'Fine dei giochi',
+    title: 'Game over',
     body: 'Hai raccolto <b>' + best + '</b> di esperienza e sbloccato <b>' +
           (state.meta.unlocked.length - 1) + '</b> abilità su ' + UNLOCKS.length + '.',
     buttons: [{ label: 'Da capo', kind: 'primary', onClick: function () {
@@ -3126,6 +3344,16 @@ function drawLives() {
     ctx.fill();
   }
   ctx.globalAlpha = 1;
+}
+
+function heartPathOn(g, x, y, s) {
+  g.beginPath();
+  g.moveTo(x, y + s * 0.28);
+  g.bezierCurveTo(x, y, x - s * 0.5, y, x - s * 0.5, y + s * 0.3);
+  g.bezierCurveTo(x - s * 0.5, y + s * 0.58, x, y + s * 0.78, x, y + s);
+  g.bezierCurveTo(x, y + s * 0.78, x + s * 0.5, y + s * 0.58, x + s * 0.5, y + s * 0.3);
+  g.bezierCurveTo(x + s * 0.5, y, x, y, x, y + s * 0.28);
+  g.closePath();
 }
 
 function heartPath(x, y, s) {
@@ -3170,6 +3398,10 @@ function frame(now) {
   if (state.paused) {
     render(now);
     drawCardDemo(elapsed);
+    if (cardAutoClose > 0) {
+      cardAutoClose -= elapsed;
+      if (cardAutoClose <= 0) hideCard();
+    }
     lastTime = now;
     return;
   }

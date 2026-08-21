@@ -164,11 +164,11 @@
       "anchor": "box"
     },
     "gate": {
-      "sheet": "assets/obj-gate.png",
+      "sheet": "assets/obj-wall.png",
       "frames": 1,
       "fps": 1,
-      "frameWidth": 20,
-      "frameHeight": 60,
+      "frameWidth": 24,
+      "frameHeight": 288,
       "anchor": "box"
     },
     "boss": {
