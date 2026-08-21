@@ -2939,28 +2939,28 @@ function showVictory() {
           'Hai chiuso con <b>' + state.meta.totalXP + '</b> di esperienza.',
     demo: makeSceneDemo('reunion'),
     buttons: [
-      { label: 'Torna a casa', kind: 'primary', onClick: function () {
-        resetProgression();
-        startRun();
+      { label: 'Torna a casa', kind: 'primary', keepOpen: true, onClick: function () {
+        endingScene('together', 'A casa', "E che il mago resti dov'è.", 3.4, function () {
+          resetProgression();
+          startRun();
+        });
       }},
-      { label: 'La mia vita è la corsa', kind: 'quiet', onClick: function () {
-        showFarewell();
+      { label: 'La mia vita è la corsa', kind: 'quiet', keepOpen: true, onClick: function () {
+        endingScene('farewell', 'Addio principessa', 'La mia vita è la corsa.', 2.9, goEndless);
       }}
     ]
   });
 }
 
-// He runs past her and keeps going. The card plays it once, closes itself,
-// and the road is open again.
-function showFarewell() {
-  cardAfter = goEndless;
-  showCard({
-    title: 'Addio principessa',
-    body: 'La mia vita è la corsa.',
-    demo: makeSceneDemo('farewell'),
-    autoClose: 3.1,
-    buttons: []
-  });
+// The card does not close and reopen: the buttons vanish, the scene changes
+// under the same frame, and it plays itself out before handing control back.
+function endingScene(kind, title, body, seconds, after) {
+  cardTitleEl.textContent = title;
+  cardBodyEl.innerHTML = body;
+  cardButtonsEl.innerHTML = '';
+  cardDemo = makeSceneDemo(kind);
+  cardAutoClose = seconds;
+  cardAfter = after;
 }
 
 // The princess is left behind on purpose: the road reopens and never ends.
@@ -3026,7 +3026,7 @@ function showCard(opts) {
     el.textContent = b.label;
     if (b.kind) el.className = b.kind;
     el.addEventListener('click', function () {
-      hideCard();
+      if (!b.keepOpen) hideCard();
       if (b.onClick) b.onClick();
     });
     cardButtonsEl.appendChild(el);
@@ -3070,12 +3070,15 @@ const SCENE_HERO_H = 40;   // the hero's height inside a card scene
 const SCENE_GROUND = 78;
 
 function makeSceneDemo(kind) {
-  return { kind: kind, t: 0, loop: 2.6 };
+  const once = (kind === 'farewell' || kind === 'together');
+  return { kind: kind, t: 0, loop: once ? 2.8 : 2.6, once: once };
 }
 
 function drawCardDemo(dt) {
   if (!cardDemo || !sprites.ready) return;
-  cardDemo.t = (cardDemo.t + dt) % cardDemo.loop;
+  cardDemo.t = cardDemo.once
+    ? Math.min(cardDemo.loop, cardDemo.t + dt)
+    : (cardDemo.t + dt) % cardDemo.loop;
 
   const g = cardDemoCtx;
   const k = cardDemo.t / cardDemo.loop;          // 0..1 through the loop
@@ -3110,12 +3113,38 @@ function drawCardDemo(dt) {
     return;
   }
 
-  if (cardDemo.kind === 'farewell') {
-    // he does not stop. She is left holding a question.
-    const px2 = SCENE_W * 0.38;
+  if (cardDemo.kind === 'together') {
+    // they close the gap, and a heart shuts over the whole thing
+    const u = Math.min(1, cardDemo.t / cardDemo.loop);
+    const close = Math.min(1, u / 0.45);
+    const hx = SCENE_W * (0.42 + 0.05 * close);
+    const px2 = SCENE_W * (0.58 - 0.05 * close);
     drawSceneEntity(g, 'princess', px2, false);
-    const hx = -30 + k * (SCENE_W + 70);
-    drawSceneHero(g, hx, SCENE_GROUND, 'run', k);
+    drawSceneHero(g, hx, SCENE_GROUND, close < 1 ? 'walk' : 'idle', k);
+
+    if (u > 0.42) {
+      // paint everything except a heart, and let the heart shrink away
+      const t2 = Math.min(1, (u - 0.42) / 0.55);
+      const r = (1 - t2) * SCENE_W * 0.95 + 2;
+      g.beginPath();
+      g.rect(0, 0, SCENE_W, SCENE_H);
+      heartCurvesOn(g, SCENE_W / 2, SCENE_H / 2 - r * 0.52, r);
+      g.fillStyle = '#0b0e15';
+      g.fill('evenodd');
+    }
+    return;
+  }
+
+  if (cardDemo.kind === 'farewell') {
+    // He starts from the spot he was standing on a moment ago, so the card
+    // reads as one continuous scene rather than a cut.
+    const px2 = SCENE_W * 0.58;
+    drawSceneEntity(g, 'princess', px2, false);
+    const startX = SCENE_W * 0.42;
+    const u = Math.min(1, cardDemo.t / cardDemo.loop);
+    const hx = startX + u * u * (SCENE_W + 70 - startX);
+    const gait = u < 0.10 ? 'idle' : (u < 0.26 ? 'walk' : 'run');
+    drawSceneHero(g, hx, SCENE_GROUND, gait, k);
     if (hx > px2 + 14) {
       const f = Math.min(1, (hx - px2 - 14) / 60);
       g.globalAlpha = f;
@@ -3348,6 +3377,12 @@ function drawLives() {
 
 function heartPathOn(g, x, y, s) {
   g.beginPath();
+  heartCurvesOn(g, x, y, s);
+}
+
+// The curves without beginPath, so a heart can be added to a path that
+// already holds something else — which is how the iris gets its hole.
+function heartCurvesOn(g, x, y, s) {
   g.moveTo(x, y + s * 0.28);
   g.bezierCurveTo(x, y, x - s * 0.5, y, x - s * 0.5, y + s * 0.3);
   g.bezierCurveTo(x - s * 0.5, y + s * 0.58, x, y + s * 0.78, x, y + s);
